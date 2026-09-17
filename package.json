@@ -3,6 +3,7 @@
   "version": "0.1.5",
   "private": true,
   "type": "module",
+  "license": "MIT",
   "description": "Out-of-tree DSH plugin workspace",
   "packageManager": "pnpm@11.7.0",
   "engines": {

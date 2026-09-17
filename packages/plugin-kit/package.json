@@ -3,6 +3,7 @@
   "version": "0.1.5",
   "private": true,
   "type": "module",
+  "license": "MIT",
   "description": "Shared build helper for the out-of-tree DSH plugins in this workspace",
   "exports": {
     "./build-plugin": "./build-plugin.mjs"

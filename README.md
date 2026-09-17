@@ -133,3 +133,7 @@ npm publish --access public          # 包名已加 @dsh-plugins-xz scope（@dsh
 
 装到用户侧：`dsh plugin --profile web add @dsh-plugins-xz/session-persona-manager`。
 `peerDependencies` 里的 `@deepseek-ai/cordis` 等由 profile 解析到宿主实例，**不要**把 cordis 打进产物。
+
+## License
+
+本项目以 [MIT 协议](./LICENSE) 发布。各发布包的 `package.json` 均声明 `"license": "MIT"`，使用即表示同意该协议条款。
