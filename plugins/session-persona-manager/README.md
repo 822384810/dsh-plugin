@@ -1,6 +1,32 @@
 # session-persona-manager
 
-会话级人格管理插件（Host + Client 双半区）：为人格建目录、把人格绑定到某个会话、在会话的 system prompt 里注入该人格，并提供浏览器入口。
+为每个会话单独设置人格（Persona），切换后从下一轮对话开始生效。
+通过左侧会话列表的 🎭 入口即可快速切换，人格配置持久化保存。
+
+**核心特性：**
+- **会话级隔离**：每个人格绑定到具体会话，互不影响
+- **左侧快捷入口**：在会话列表行上直接点击 🎭 切换人格
+- **持久化存储**：重启 DSH 后会话人格选择自动恢复
+- **动态注入**：人格在 Agent 作用域内注册，不污染全局配置
+
+## 工作原理
+
+`session-persona-manager` 复用了 DSH 的以下能力接缝：
+
+| DSH 能力 | 插件用法 |
+|---|---|
+| `ctx.tools` 注册表 | 注册 `manage_session_persona` 工具 |
+| `ctx.connection.fetch` | 在 Connection 鉴权栅栏内提供 `/api/session-persona-manager/personas` 与 `/api/session-persona-manager/session` HTTP 路由 |
+| `ctx.systemPrompt.section()` | 在 agent 作用域内注入人格提示段 |
+| 文件系统 | 人格映射持久化在插件数据目录 |
+
+数据流：UI 选择人格 → HTTP 路由写入映射 → 会话启动时读取映射 → agent 作用域注册提示段。
+
+## 安装
+
+```bash
+dsh plugin --profile web add @dsh-plugins-xz/session-persona-manager
+```
 
 ## 注册了什么
 
@@ -8,7 +34,7 @@
 |---|---|---|
 | 模型 | 工具 `manage_session_persona`（`get` / `set` / `list`） | `src/index.ts` |
 | 模型 | system prompt 段 `session-persona-manager:persona`（绑定后按会话注入） | `src/index.ts`（注册在 `agent.ctx`，随该 agent 生命周期） |
-| 浏览器 | `GET /api/session-persona-manager/personas` | 走 Connection 的鉴权栅栏 |
+| 浏览器 | `GET\|POST /api/session-persona-manager/personas` | 走 Connection 的鉴权栅栏（GET 列目录；POST 按 `op` 创建/更新/删除） |
 | 浏览器 | `GET\|POST /api/session-persona-manager/session` | 读取/写入会话绑定 |
 | 浏览器 | 插槽 `conversation.session.header.actions` 的一个人格入口 | `src/client/index.tsx` |
 | 浏览器 | locale 命名空间 `session-persona-manager`（zh/en） | `src/client/locales.ts` |
@@ -39,6 +65,7 @@ src/types.ts           自包含的最小 DSH 类型面（不 import harness 私
 src/shims.d.ts         运行时依赖的 harness 包的类型垫片
 src/client/index.tsx   浏览器半区入口：注册插槽与文案
 src/client/PersonaBar.tsx  会话头部的人格选择组件
+src/client/PersonaManager.tsx  人格管理弹窗（新增 / 编辑 / 删除，由 PersonaBar 拉起）
 packages/plugin-kit/build-plugin.mjs   esbuild：lib/index.js（ESM）+ lib/client.js（模块加载器包装）
 cordis.patch.yml       bundle 层（package.json 的 dsh.bundle.patch 指向它）
 ```
@@ -69,7 +96,7 @@ pnpm dsh --profile persona-dev
 ```powershell
 cd <dsh-plugin>/plugins/session-persona-manager
 pnpm run build    # 等价 node ../../packages/plugin-kit/build-plugin.mjs，构建 lib/
-npm pack          # 生成 dsh-plugins-session-persona-manager-0.1.5.tgz
+npm pack          # 生成 dsh-plugins-xz-session-persona-manager-0.1.5.tgz
 ```
 
 本地加载（无需 tarball，指向含 `cordis.patch.yml` 的源码目录即可）：
