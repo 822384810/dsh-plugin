@@ -1,0 +1,10 @@
+# llm-trace 的组合层。默认把每次模型请求写成 $DSH_HOME/logs/llm-trace/ 下的一个 JSON 文件，
+# 并在 stderr 打一行摘要；排查完记得把它从 profile 的 bundles 里移除（或在下面临时禁用）。
+- insert:
+    - id: llm-trace
+      name: '@dsh-plugins-xz/llm-trace'
+      config:
+        # summary：stderr 一行摘要 | full：整份请求打到 stderr | off：只写文件
+        print: full
+        # 每次请求一个可读的 JSON 文件（system + messages + provider/model 等）
+        file: true

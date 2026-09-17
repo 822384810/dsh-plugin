@@ -1,0 +1,13 @@
+packages:
+  - 'plugins/*'
+  - 'packages/*'
+
+# pnpm 11 阻止依赖的安装脚本，除非显式放行。esbuild 的 postinstall 才会把平台二进制
+# （@esbuild/win32-x64 等）链接到位，本工作区只用它做打包，故只放行它。
+allowBuilds:
+  esbuild: true
+
+# 插件的 @deepseek-ai/* 同伴由运行中的 dsh（profile）提供，开发期不需要、也不应该从 registry
+# 装一份：默认的 autoInstallPeers: true 会去解析同伴范围，遇到预发布版本还会直接安装失败。
+# 开发期类型来自各包内的最小声明（src/types.ts / src/shims.d.ts）。
+autoInstallPeers: false

@@ -1,0 +1,16 @@
+# session-persona-manager 的组合层（profile 通过 package.json 的 dsh.bundle.patch 加载本文件）。
+#
+# name 写 scope 包名（@dsh-plugins-xz/session-persona-manager）：装进 profile 后
+# （dsh plugin --profile <p> add <path>）解析到 profile 的
+# node_modules/@dsh-plugins-xz/session-persona-manager，客户端半区也才能被 __DSH_BOOT__
+# 扫描到（扫描依赖「包名 + Node 解析」）。
+- insert:
+    - id: session-persona-manager
+      name: '@dsh-plugins-xz/session-persona-manager'
+
+# 开发期只调 Host 半区时，也可以改用 --patch 覆盖层直接指向源码构建产物（绝对路径）
+# —— 注意此时客户端半区不可用（file URL 没有包名，扫描不到 dsh.client）：
+#
+# - insert:
+#     - id: session-persona-manager
+#       name: file:///<dsh-plugin>/plugins/session-persona-manager/lib/index.js

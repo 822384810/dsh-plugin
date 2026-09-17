@@ -1,0 +1,13 @@
+{
+  "name": "@dsh-plugins-xz/plugin-kit",
+  "version": "0.1.5",
+  "private": true,
+  "type": "module",
+  "description": "Shared build helper for the out-of-tree DSH plugins in this workspace",
+  "exports": {
+    "./build-plugin": "./build-plugin.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
