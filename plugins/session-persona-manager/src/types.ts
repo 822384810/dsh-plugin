@@ -7,6 +7,8 @@
  * identity still comes from the profile, which resolves peers to the running dsh.
  */
 
+import type { LoggerSink } from '@dsh-plugins-xz/log-utils'
+
 /** JSON Schema subset accepted for tool parameters and tool output. */
 export type JsonSchema = Record<string, unknown>
 
@@ -65,6 +67,8 @@ export interface ConnectionService {
 /** Context handed to the Host half's `apply`. */
 export interface PluginContext {
   readonly tools: { register(definition: ToolDefinition): () => void }
+  /** Host logger, when the surface provides one. */
+  readonly logger?: LoggerSink | undefined
   effect(callback: () => (() => void) | void, label?: string): () => void
   on(event: 'agent/created', listener: (payload: { readonly agent: Agent }) => unknown): () => void
   inject(

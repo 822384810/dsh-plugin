@@ -6,6 +6,8 @@ packages:
 # （@esbuild/win32-x64 等）链接到位，本工作区只用它做打包，故只放行它。
 allowBuilds:
   esbuild: true
+  onnxruntime-node: true
+  tesseract.js: false
 
 # 插件的 @deepseek-ai/* 同伴由运行中的 dsh（profile）提供，开发期不需要、也不应该从 registry
 # 装一份：默认的 autoInstallPeers: true 会去解析同伴范围，遇到预发布版本还会直接安装失败。

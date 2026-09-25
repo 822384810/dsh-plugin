@@ -8,7 +8,7 @@
  * second Cordis instance, since the profile resolves them to the running dsh.
  *
  * The package manifest is the single source of truth for the supported host floor: the
- * `@deepseek-ai/dsh-home-paths` peer must be an open-ended `>=` range (a pinned or upper-bounded
+ * `@deepseek-ai/dsh` peer must be an open-ended `>=` range (a pinned or upper-bounded
  * range would force a plugin release for every host bump), and its floor is compiled into the
  * build as `__MINIMUM_HOST_VERSION__`.
  */
@@ -18,7 +18,7 @@ import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
 /** Peer that carries the supported host floor. */
-const HOST_PEER = '@deepseek-ai/dsh-home-paths'
+const HOST_PEER = '@deepseek-ai/dsh'
 
 /** Packages the browser module table owns; bundling them breaks shared identity. */
 const CLIENT_EXTERNALS = [
@@ -52,7 +52,7 @@ export async function buildPlugin({ root = process.cwd() } = {}) {
   if (minimumHostVersion === undefined || minimumHostVersion === '') {
     throw new Error(
       `${packageName}: package.json peer "${HOST_PEER}" must be an open-ended floor such as `
-      + `">=0.1.6-alpha.1", got ${JSON.stringify(hostPeer)}`,
+      + `">=0.1.7-rc.1", got ${JSON.stringify(hostPeer)}`,
     )
   }
 

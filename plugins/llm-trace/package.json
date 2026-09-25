@@ -1,6 +1,6 @@
 {
   "name": "@dsh-plugins-xz/llm-trace",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "Dump every model request the agent loop dispatches (assembled system prompt + exact message list) as readable JSON.",
   "type": "module",
   "license": "MIT",
@@ -28,8 +28,7 @@
     "postpack": "node ../../packages/plugin-kit/postpack.mjs"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": ">=4.0.2",
-    "@deepseek-ai/dsh-home-paths": ">=0.1.6-alpha.1"
+    "@deepseek-ai/dsh": ">=0.1.7-rc.1"
   },
   "devDependencies": {
     "@dsh-plugins-xz/plugin-kit": "workspace:*",

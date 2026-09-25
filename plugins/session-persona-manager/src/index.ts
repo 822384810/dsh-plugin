@@ -13,6 +13,7 @@ import { createRequire } from 'node:module'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { PersonaStore, type Persona } from './store.ts'
 import type { PluginContext, ToolDefinition } from './types.ts'
+import { createLogger, type Logger } from '@dsh-plugins-xz/log-utils'
 import { ResultCode, reply } from '@dsh-plugins-xz/result-utils'
 
 /** Stable Cordis plugin name; also the row id in `cordis.patch.yml`. */
@@ -23,7 +24,7 @@ export const inject = ['tools']
 
 /**
  * Minimum host release this build supports. Injected at build time from the
- * `@deepseek-ai/dsh-home-paths` peer floor in `package.json`, which keeps one source of truth:
+ * `@deepseek-ai/dsh` peer floor in `package.json`, which keeps one source of truth:
  * raising the floor is a manifest edit, and a newer host needs no plugin change at all.
  */
 export const MINIMUM_HOST_VERSION = __MINIMUM_HOST_VERSION__
@@ -90,12 +91,13 @@ function hostVersion(): string | undefined {
  * unmet `peerDependencies` range is never reported by the package manager — the only place a
  * too-old host can be caught is here. Newer hosts are accepted without a plugin change: the
  * check compares release lines and rejects only a host below {@link MINIMUM_HOST_VERSION}.
+ * @param log - Diagnostics sink for the unreadable-version notice.
  * @throws when the host reports a release line older than the supported floor.
  */
-function assertHostVersion(): void {
+function assertHostVersion(log: Logger): void {
   const actual = hostVersion()
   if (actual === undefined) {
-    process.stderr.write(`${name}: host dsh version unreadable; this build requires dsh >= ${MINIMUM_HOST_VERSION}\n`)
+    log.warn(`host dsh version unreadable; this build requires dsh >= ${MINIMUM_HOST_VERSION}`)
     return
   }
   const host = releaseLine(actual)
@@ -169,7 +171,8 @@ function personaTool(store: PersonaStore): ToolDefinition {
  * @param ctx - Host context carrying the tool registry, and `connection` on Web surfaces.
  */
 export function apply(ctx: PluginContext): void {
-  assertHostVersion()
+  const log: Logger = createLogger(name, { sink: ctx.logger })
+  assertHostVersion(log)
   const store = new PersonaStore()
 
   ctx.effect(() => ctx.tools.register(personaTool(store)), `${name}: ${PERSONA_TOOL}`)

@@ -1,11 +1,11 @@
 # session-persona-manager
 
 为每个会话单独设置人格（Persona），切换后从下一轮对话开始生效。
-通过左侧会话列表的 🎭 入口即可快速切换，人格配置持久化保存。
+通过会话头部的 🎭 入口即可快速切换，人格配置持久化保存。
 
 **核心特性：**
 - **会话级隔离**：每个人格绑定到具体会话，互不影响
-- **左侧快捷入口**：在会话列表行上直接点击 🎭 切换人格
+- **会话头部快捷入口**：在会话头部直接点击 🎭 切换人格
 - **持久化存储**：重启 DSH 后会话人格选择自动恢复
 - **动态注入**：人格在 Agent 作用域内注册，不污染全局配置
 
@@ -41,20 +41,10 @@ dsh plugin --profile web add @dsh-plugins-xz/session-persona-manager
 
 数据文件：`$DSH_HOME/storages/session-persona-manager/personas.json`（首次运行只写入默认人格；删除为软删除，记录 `status=0` 保留但不再列出，每条记录含 `createTime` / `updateTime` 两个时间字段，均为 ISO-8601 UTC 字符串（如 `2026-09-17T08:30:00.000Z`），由 `@dsh-plugins-xz/time-utils` 的 `formatTimestamp()` 统一生成）。
 
-### 统一返回体
+## 数据结构
 
-所有 `/api` 路由返回同一信封 `{ code, msg, data }`（定义于公共包 `@dsh-plugins-xz/result-utils`），HTTP 状态恒为 200，业务结果由 `code` 区分：
-
-```ts
-enum ResultCode { OK = 0, FAIL = 1, PARAM_ERR = 2, NO_LOGIN = 3, NO_AUTH = 4, EXCEPTION = -1 }
-// { code: ResultCode, msg: string, data: T | null }
-```
-
-- 成功：`{ code: 0, msg: "ok", data: <载荷> }`；`GET /personas` 的 `data` 为 `PersonaView[]`，其余单条/绑定的 `data` 为 `PersonaView`，`session` 未绑定时 `data: null`，`delete` 成功时 `data: null`。
-- 失败：`code` 取 `PARAM_ERR`（缺参/非法参数）、`FAIL`（业务找不到，如未知或被保留人格）、`EXCEPTION`（意外异常）；`msg` 为可读错误，`data` 恒为 `null`。
-- 浏览器半区 `unwrap<T>()`（`src/client/index.tsx`）统一解析：非 2xx 或 `code !== 0` 时抛错，否则返回 `data`。
-
-`PersonaView` 为 `{ id, name, content }`（不含 `createTime` / `updateTime` / `status`，由 `view()` 投影）。
+- `PersonaView`（API 投影，不含 `createTime` / `updateTime` / `status`）：`{ id, name, content }`。
+- 存储见上文「注册了什么」：`$DSH_HOME/storages/session-persona-manager/personas.json`（首次运行只写入默认人格；删除为软删除，记录 `status=0`）。
 
 ## 目录
 
@@ -86,90 +76,6 @@ pnpm dsh --profile persona-dev
 
 改浏览器半区后：`pnpm --filter session-persona-manager run build`，浏览器会通过 client-hmr 免刷新热替换；
 改 Host 半区后需要重启 `dsh --profile persona-dev`。
-
-## 打包（本地 / 发布 tarball）
-
-`@dsh-plugins-xz/time-utils` 与 `@dsh-plugins-xz/result-utils` **不单独发布**：构建时由 esbuild 直接打包（bundle）进 `lib/index.js` / `lib/client.js`，用户只需安装 `@dsh-plugins-xz/session-persona-manager` 一个包即可，无需另行安装任何 `@dsh-plugins-xz/*`。它们只在 `devDependencies` 中以 `workspace:*` 声明，仅供本地 monorepo 内构建期链接；打包时由 `prepack` 钩子（`packages/plugin-kit/prepack.mjs`）把 `devDependencies`/`scripts` 从发布包 manifest 中剥离，因此最终产物是单包自包含的。
-
-产出可分发包（内容由 `package.json` 的 `files` 决定：含 `lib/`、`cordis.patch.yml`、`README.md`）：
-
-```powershell
-cd <dsh-plugin>/plugins/session-persona-manager
-pnpm run build    # 等价 node ../../packages/plugin-kit/build-plugin.mjs，构建 lib/
-npm pack          # 生成 dsh-plugins-xz-session-persona-manager-0.1.5.tgz
-```
-
-本地加载（无需 tarball，指向含 `cordis.patch.yml` 的源码目录即可）：
-
-```powershell
-dsh plugin --profile web add <dsh-plugin>/dsh-plugins-xz-session-persona-manager-0.1.5.tgz
-```
-
-或用刚生成的 tarball：
-
-```powershell
-dsh plugin --profile web add <dsh-plugin>/dsh-plugins-xz-session-persona-manager-0.1.5.tgz
-```
-
-## 验证人格确实进了模型请求
-
-用同工作区的 [`llm-trace`](../llm-trace/README.md) 插件观察真实请求（`llm/stream` 事件 → 每次请求一个 JSON）：
-
-```powershell
-pnpm dsh plugin --profile <profile> add D:\…\dsh-plugin\plugins\llm-trace
-pnpm dsh --profile <profile> "只回复：ok"        # 或 --session-id <id> 续跑
-# 然后看 $DSH_HOME/logs/llm-trace/ 里最新的 JSON，检查 role=system 的消息
-```
-
-实测（本地 store 里 `concise` 的内容是 `你的名字叫：小简`）：
-
-| 请求 | messages | system 字数 | 人格 |
-|---|---|---|---|
-| 新会话首次请求（该会话未绑人格） | 5 | 4278 | 无 |
-| 同轮内 `manage_session_persona` 绑定后的下一次请求 | 7 | 4288 | **有**（`@112`，8 字 + 分隔换行） |
-| `--session-id` 续跑已绑人格的会话 | 13 | 4288 | **有** |
-
-结论与语义：
-
-- prompt **按请求装配**，人格段落用 `text: () => …` 实时读取 store，所以**同会话 `set` 后，该轮的下一次请求就带上人格**（不是等下次会话）；
-- 续跑会话会重新装配，同样生效；
-- 未绑定人格时段落返回空串，不进入提示词（系统提示词长度不变）；
-- 系统提示词在 `messages` 的 `system` 消息里（不在 `options.system`）。
-
-## 实测过的行为
-
-- 启动后 `GET /api/session-persona-manager/personas` → `200`，返回默认人格；
-- 同一路由**不带**会话 cookie → `401`（说明路由确实在 Connection 的鉴权栅栏内）；
-- `POST /api/session-persona-manager/session`（`{sessionId, personaId}`）→ `200`，随后 `GET` 读回同一人格（存储生效）；
-- 启动日志无激活告警，`window.__DSH_BOOT__` 的启动组合里包含 `session-persona-manager/client.js`，并单独广告了 `/plugins/??session-persona-manager/client.js&rev=…`（客户端半区被发现并托管）。
-
-未覆盖：真实模型调用下 system prompt 段与实际注入内容（需要一次带模型的会话）；建议在 UI 里绑定人格后发一条消息，用会话日志确认 `system/message` 里出现人格文本。
-
-## 版本与宿主对齐（重要）
-
-**策略：下界开放、向上自动兼容，不写死。**
-
-| 项 | 值 |
-|---|---|
-| 声明的下界 | `peerDependencies["@deepseek-ai/dsh-home-paths"] = ">=0.1.5-rc.2"`；`@deepseek-ai/cordis` = `">=4.0.2"`（vendor 是独立版本线，不跟 dsh） |
-| 运行时护栏 | `assertHostVersion()`：启动时读宿主 dsh 版本，**只有低于下界**才拒绝激活；更高版本（`0.1.7`、`0.2.0`…）一律放行，插件无需重发 |
-| 单一真源 | 下界只在 `package.json` 写一次；`scripts/build.mjs` 强制它必须是 `>=` 开头的开放下界，并注入产物为 `MINIMUM_HOST_VERSION` |
-
-三条都跑过真实启动：
-
-| 场景 | 结果 |
-|---|---|
-| 下界 ≤ 宿主（`>=0.1.5-rc.2` / 宿主 `0.1.6-alpha.1`，即当前部署情形） | 静默通过，接口 200 |
-| **下界低于宿主**（`>=0.1.5` / 宿主 `0.1.6-alpha.1`，即后续升级的情形） | **静默通过**，接口 200 —— 升级宿主不用改插件 |
-| 下界高于宿主（`>=0.1.7` / 宿主 `0.1.6-alpha.1`，即"版本太低"） | 拒绝激活并点名：`host dsh 0.1.6-alpha.1 is older than the supported 0.1.7; upgrade the host, or install a plugin build for that host`（宿主自身照常启动） |
-
-三个坑：
-
-1. **下界必须写成预发布形态**（`>=0.1.5-rc.2`）。若写成稳定的 `>=0.1.0`，semver 的预发布规则会让 `0.1.6-alpha.1` **不满足**该范围；pnpm 默认 `autoInstallPeers: true` 会真去 npm 解析同伴，于是直接 `ERR_PNPM_NO_MATCHING_VERSION` 构建失败。
-2. **profile 里同伴依赖不被校验**（`autoInstallPeers: false` + `link:`，实测故意写错也静默通过），版本只能靠上面的运行时护栏兜底。
-3. **别按 npm 的 `latest` 判断宿主版本**：`@deepseek-ai/dsh` 的 latest 目前是 `0.1.5-rc.1`、`dsh-home-paths` 停在老的 `0.0.1-rc.3` 线，而实际宿主 `0.1.6-alpha.1` 挂在 `alpha` 标签下。另外，若宿主未来改用**新 tuple 的预发布**（如 `0.1.7-alpha.1`），npm 的同伴检查仍可能报"不满足"（同一预发布规则）——运行时放行，但在纯 npm 环境安装会看到告警。
-
-本工作区 `pnpm-workspace.yaml` 设了 `autoInstallPeers: false`：开发期不装同伴（避免上面的解析失败），类型来自包内最小声明。
 
 ## 已知限制
 

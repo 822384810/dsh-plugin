@@ -1,0 +1,17 @@
+{
+  "name": "@dsh-plugins-xz/log-utils",
+  "version": "0.1.7",
+  "description": "Canonical logging surface shared by every DSH plugin: one prefixed logger over the harness sink with a stderr fallback.",
+  "type": "module",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@dsh-plugins-xz/time-utils": "workspace:*"
+  }
+}

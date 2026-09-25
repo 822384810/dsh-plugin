@@ -10,6 +10,18 @@ DSH 插件工作区（仓库外插件，pnpm workspace）。目录布局：
     └── plugins/session-persona-manager/
 ```
 
+## 目录
+
+- [与 harness checkout 的关系](#与-harness-checkout-的关系)
+- [术语：面（"半区"）/ 条目 / 层](#术语面半区-条目-层)
+- [插件](#插件)
+- [共享包与使用约定](#共享包与使用约定)
+- [常用命令](#常用命令)
+- [本地调试](#本地调试)
+- [参考外部文档时的 API 对照](#参考外部文档时的-api-对照)
+- [版本与宿主对齐（重要）](#版本与宿主对齐重要)
+- [License](#license)
+
 ## 与 harness checkout 的关系
 
 `dsh-plugin` 是 harness 仓库的**兄弟目录**，不在它的 pnpm workspace glob 内，因此：
@@ -28,7 +40,7 @@ DSH 插件工作区（仓库外插件，pnpm workspace）。目录布局：
 | 入口 / 产物 | `exports["."]` → `lib/index.js`（ESM） | `exports["./client"]` → `lib/client.js`（模块加载器包装的 CJS） |
 | 挂载依据 | `cordis.patch.yml` 的一条 `insert` | `package.json` 的 `dsh.client.platform = "web"`，由 `window.__DSH_BOOT__` roster 扫描包名 |
 | 可用的东西 | 全部 cordis 服务：`ctx.tools` / `ctx.systemPrompt` / `ctx.webServer` / `ctx.connection` / 会话事件 / fs / shell / LLM | 模块表（`react`、`react-dom`、`@deepseek-ai/cordis`、`client-store`、`ui-slots`、`ui-primitives`、`ui-dockkit`）+ inject 服务 + 插槽 |
-| 跨面通信 | 注册 `/api` 路由、`rpc` channel、Typert Remote 契约 | `fetch('/api/…')`、`ctx.connection.rpc`、`ctx.remote.*` |
+| 跨面通信 | 注册带鉴权的 `/api` 精确 Fetch 路由（`ctx.connection.fetch.register`）、Typert Remote 契约 | `fetch('/api/…')`、`ctx.remote.*` |
 | 改动生效 | **重启** profile 进程 | client-hmr **免刷新**热替换（见下"开发循环"） |
 
 三个要点：
@@ -53,11 +65,30 @@ DSH 插件工作区（仓库外插件，pnpm workspace）。目录布局：
 |---|---|
 | [`plugins/session-persona-manager`](plugins/session-persona-manager/README.md) | 会话级人格：工具 `manage_session_persona` + 按会话注入 system prompt + 会话头部 UI（双半区） |
 | [`plugins/llm-trace`](plugins/llm-trace/README.md) | 把每次发给模型的完整请求（`system` + `messages` + `tools`）落盘成可读 JSON，用于核对提示词/人格是否真的进了请求（仅 Host 半区） |
+| [`plugins/llm-wiki`](plugins/llm-wiki/README.md) | 知识库（Karpathy 三层：`raw/` 只读、`wiki/` 由 LLM 维护、`schema.md` 定规则）：多库注册表、摄入队列、混合检索、Agent 工具 + 斜杠命令 + 自动注入，以及侧边栏面板（双半区） |
 
-## 共享包
+## 共享包与使用约定
 
-- [`packages/time-utils`](packages/time-utils/README.md)：所有插件统一使用的时间工具（`now()` / `formatTimestamp()`），作为时间戳的唯一真源。新增插件请勿直接 `Date.now()`，改为从本包导入，保证时间格式一致、将来可统一替换实现。
-- [`packages/result-utils`](packages/result-utils/README.md)：所有插件统一的 HTTP 返回体 `{ code, msg, data }`（`ResultCode` 枚举 + `reply()` 构造 + `unwrap()` 解析），Host 与浏览器半区共用，保证接口线格式一致。
+`packages/*` 是工作区内的**通用工具包**，所有插件统一使用。它们**源码直供**（`main`/`types` 指向 `src/index.ts`，没有构建产物），构建时由 esbuild **内联**进各插件的 `lib/` —— 因此**不单独发布**，也不会作为运行时依赖出现在消费方的 `node_modules`。
+
+| 包 | 提供 | 约定（统一口径） |
+|---|---|---|
+| [`packages/time-utils`](packages/time-utils/README.md) | `now()` / `formatTimestamp(ts?)` / `Timestamp` | 时间只走本包：取当前时间 `now()`，格式化/持久化 `formatTimestamp()`。**禁止**直接调 `new Date()` / `Date.now()` / `toISOString()`。 |
+| [`packages/result-utils`](packages/result-utils/README.md) | `ResultCode` / `Result<T>` / `reply()` / `unwrap()` | `/api` 路由返回值一律用统一信封 `{ code, msg, data }`：Host 用 `reply(ResultCode.OK, 'ok', data)`，浏览器用 `await unwrap<T>(await fetch(…))`。HTTP 状态恒 200，业务结果只看 `code`。**禁止**自造 `{ ok, value }` 之类的信封。 |
+| [`packages/log-utils`](packages/log-utils/README.md) | `LogLevel` / `Logger` / `LoggerSink` / `LoggerOptions` / `createLogger(label, options?)` / `dshLogFile(name)` | 插件日志统一用 `createLogger('<plugin-name>', { sink: ctx.logger })`：每行 `[label]` 前缀，同时落到**终端**（宿主 `stderr` / 浏览器 `console`）、**日志文件**（默认 `$DSH_HOME/logs/<label>.log`）与**可选的 harness logger**。级别 `debug` / `info` / `warn` / `error`。**禁止**在业务代码里裸调 `console.*` / `process.stderr.write()`（像 `llm-trace` 那样刻意把 trace 结果写到 stderr 的输出除外）。 |
+
+在新插件里接入（全部只写进 `devDependencies`，**不要**写 `dependencies`，否则发布包会带上本地 monorepo 依赖）：
+
+```jsonc
+"devDependencies": {
+  "@dsh-plugins-xz/log-utils": "workspace:*",
+  "@dsh-plugins-xz/plugin-kit": "workspace:*",
+  "@dsh-plugins-xz/result-utils": "workspace:*",
+  "@dsh-plugins-xz/time-utils": "workspace:*"
+}
+```
+
+**为什么要统一**：口径一致（时间格式、接口线格式、日志前缀）；单一真源（改实现只改一处，例如把 `now()` 换成可注入时钟以便确定性测试）；消费方单包自包含（工具被内联进 `lib/`，用户只装插件本身）。新增通用工具请同样放进 `packages/<name>`，并在上表登记约定。
 
 ## 常用命令
 
@@ -107,32 +138,37 @@ pnpm dsh web --patch D:\path\to\dev.patch.yml
 |---|---|
 | 插槽 `sidebar.session.row.action` | **不存在**（会话行菜单是硬编码的）。用 `conversation.session.header.actions`（list/session，能拿到 `sessionId`）或 `sidebar.footer.action`（list/root） |
 | `ctx.pluginDataDir` | **不存在**。`$DSH_HOME/storages/<plugin>/…`（`dshHomePath()`）或 `ctx.storageDomain` |
-| `ctx.webServer.get/post`（express 风格） | **不存在**。只有 `ctx.webServer.register({ kind: 'exact'\|'prefix', path, handler })`（node:http）；且自注册 `/api/*` **绕过**浏览器信任栅栏 —— 正确做法是 `ctx.connection.fetch.register(...)` / `ctx.connection.rpc.handle(...)` |
+| `ctx.webServer.get/post`（express 风格） | **不存在**。只有 `ctx.webServer.register({ kind: 'exact'\|'prefix', path, handler })`（node:http）；且自注册 `/api/*` **绕过**浏览器信任栅栏 —— 正确做法是 `ctx.connection.fetch.register({ path: '/api/<plugin>', methods, requestBody: 'buffered', fetch })`。注意：`ctx.connection.rpc.handle(...)` 在 out-of-tree 插件里**挂不上**（harness 用注册上下文自身的 fiber 解析 `webServer`，实测抛 `cannot get property "webServer" without inject`），不要用 |
 | `exec.agent.sessionId`；`agent/created` 直接给 sessionId | `exec.agent.session`（Agent 对象）；`agent/created` payload 为 `{ agent, source }` |
 | `systemPrompt.section({ content })` | 字段是 **`text`**；`order` 优先用 `ctx.systemPrompt.getSectionOrder(...)`（仓库内插件） |
 | `dsh-plugin-create` / `scripts/auto-register.js` / `dsh-hot-reload` | **都不存在**。等价能力：手写包结构 + `dsh plugin add` + `@deepseek-ai/dsh-client-hmr` |
 | `dsh.bundle.patch` | 真实存在，且是 `dsh plugin add` 识别插件的**唯一依据**（没有它只当普通依赖安装） |
 
-## 版本对齐（写插件时最需要注意的一项）
+## 版本与宿主对齐（重要）
 
-- dsh 家族（`@deepseek-ai/dsh*`）**同版本发布**，本机 checkout 与 profile 实际加载的是 **`0.1.6-alpha.1`**；`@deepseek-ai/cordis` 是 vendor 独立线，当前 **`4.0.2`**。npm 的 `latest` 标签**落后**（`@deepseek-ai/dsh` → `0.1.5-rc.1`，`dsh-home-paths` → `0.0.1-rc.3`），判断宿主版本别看它。
-- 插件采用**下界开放**策略：`peerDependencies` 写 `>=0.1.6-alpha.1`（不写上限、不写死），运行时只拒绝**低于下界**的宿主，更高版本自动兼容、无需重发插件。
-- 下界只在 `package.json` 写一次：构建脚本强制它必须是 `>=` 形式的开放下界（防止有人改回精确值或加上限），并注入产物。
-- 同伴依赖在 profile 中**不被校验**（`autoInstallPeers: false` + `link:`），所以插件自带运行时护栏；本工作区也设了 `autoInstallPeers: false`，开发期不装同伴，类型来自各包内的最小声明。
-- 注意：把下界写成稳定版本（如 `>=0.1.0`）会因 semver 预发布规则**装不上** `0.1.6-alpha.1`（pnpm 默认 `autoInstallPeers: true` 时会直接 `ERR_PNPM_NO_MATCHING_VERSION`）。
+**策略：下界开放、向上自动兼容，不写死。**
 
-## 发布
+| 项 | 值 |
+|---|---|
+| 声明的下界 | `peerDependencies["@deepseek-ai/dsh"] = ">=0.1.7-rc.1"`（单一宿主版本约束；cordis / dsh-home-paths 等宿主包由运行时从宿主解析，不再作为版本门） |
+| 运行时护栏 | `assertHostVersion()`：启动时读宿主 dsh 版本，**只有低于下界**才拒绝激活；更高版本（`0.1.7`、`0.2.0`…）一律放行，插件无需重发 |
+| 单一真源 | 下界只在 `package.json` 写一次，由 `packages/plugin-kit/build-plugin.mjs` 的 `HOST_PEER` 读取，强制它必须是 `>=` 开头的开放下界，并注入产物为 `MINIMUM_HOST_VERSION` |
 
-```powershell
-cd plugins/session-persona-manager
-pnpm run build
-npm publish --access public          # 包名已加 @dsh-plugins-xz scope（@dsh-plugins-xz/session-persona-manager），可直接发布
-```
+三条都跑过真实启动：
 
-注意：`@dsh-plugins-xz/time-utils` / `@dsh-plugins-xz/result-utils` 不单独发布，构建时由 esbuild 内联进 `lib/`，故在 `package.json` 中它们只以 `devDependencies`（`workspace:*`）出现、仅供本地 monorepo 构建期链接；最终 `@dsh-plugins-xz/session-persona-manager` 是单包自包含，用户装一个即可。`pnpm run build` 即可正常构建；打包时由 `prepack` 钩子（`packages/plugin-kit/prepack.mjs`）把 `devDependencies`/`scripts` 从发布包 manifest 中剥离，避免消费方 `pnpm add` 误装构建依赖而跨盘软链失败（Windows 上表现为 `EPERM`）。
+| 场景 | 结果 |
+|---|---|
+| 下界 ≤ 宿主（`>=0.1.7-rc.1` / 宿主 `0.1.7-rc.1`，即当前部署情形，下限等于宿主） | 静默通过，接口 200 |
+| **下界低于宿主**（`>=0.1.7-rc.1` / 宿主 `0.1.8`，即后续升级的情形） | **静默通过**，接口 200 —— 升级宿主不用改插件 |
+| 下界高于宿主（`>=0.1.7-rc.1` / 宿主 `0.1.6-alpha.1`，即"版本太低"） | 拒绝激活并点名：`host dsh 0.1.6-alpha.1 is older than the supported 0.1.7-rc.1; upgrade the host, or install a plugin build for that host`（宿主自身照常启动） |
 
-装到用户侧：`dsh plugin --profile web add @dsh-plugins-xz/session-persona-manager`。
-`peerDependencies` 里的 `@deepseek-ai/cordis` 等由 profile 解析到宿主实例，**不要**把 cordis 打进产物。
+三个坑：
+
+1. **下界必须写成预发布形态**（`>=0.1.7-rc.1`）。若写成稳定的 `>=0.1.0`，semver 的预发布规则会让 `0.1.6-alpha.1` **不满足**该范围；pnpm 默认 `autoInstallPeers: true` 会真去 npm 解析同伴，于是直接 `ERR_PNPM_NO_MATCHING_VERSION` 构建失败。
+2. **profile 里同伴依赖不被校验**（`autoInstallPeers: false` + `link:`，实测故意写错也静默通过），版本只能靠上面的运行时护栏兜底。
+3. **别按 npm 的 `latest` 判断宿主版本**：`@deepseek-ai/dsh` 的 latest 目前是 `0.1.5-rc.1`、`dsh-home-paths` 停在老的 `0.0.1-rc.3` 线，而实际宿主 `0.1.6-alpha.1` 挂在 `alpha` 标签下。另外，若宿主未来改用**新 tuple 的预发布**（如 `0.1.7-alpha.1`），npm 的同伴检查仍可能报"不满足"（同一预发布规则）——运行时放行，但在纯 npm 环境安装会看到告警。
+
+本工作区 `pnpm-workspace.yaml` 设了 `autoInstallPeers: false`：开发期不装同伴（避免上面的解析失败），类型来自包内最小声明。
 
 ## License
 

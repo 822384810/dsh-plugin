@@ -8,9 +8,9 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   Button,
-  IconEditOutline16,
-  IconPlusOutline16,
-  IconTrashOutline16,
+  IconEditOutlineRegular,
+  IconPlusOutlineRegular,
+  IconTrashOutlineRegular,
   Input,
   Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -210,7 +210,7 @@ export function PersonaManager({
       {mode === 'list' ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Button variant="ghost" size="sm" icon={<IconPlusOutline16 />} onClick={openCreate}>
+            <Button variant="ghost" size="sm" icon={<IconPlusOutlineRegular />} onClick={openCreate}>
               {t('panel.add')}
             </Button>
           </div>
@@ -262,7 +262,7 @@ export function PersonaManager({
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                icon={<IconEditOutline16 />}
+                                icon={<IconEditOutlineRegular />}
                                 onClick={() => { openEdit(persona) }}
                               >
                                 {t('panel.edit')}
@@ -270,7 +270,7 @@ export function PersonaManager({
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                icon={<IconTrashOutline16 />}
+                                icon={<IconTrashOutlineRegular />}
                                 onClick={() => { setConfirmingDelete(persona.id) }}
                               >
                                 {t('panel.delete')}

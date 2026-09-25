@@ -1,0 +1,133 @@
+diff --git a/apps/desktop/scripts/desktop-build-paths.mjs b/apps/desktop/scripts/desktop-build-paths.mjs
+index 4f33e804c3..c791b73a9e 100644
+--- a/apps/desktop/scripts/desktop-build-paths.mjs
++++ b/apps/desktop/scripts/desktop-build-paths.mjs
+@@ -3,7 +3,7 @@
+ import { join, resolve } from 'node:path'
+ 
+ const APP_ROOT = resolve(import.meta.dirname, '..')
+-const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
++const BUILD_ROOT = process.env.DSH_DESKTOP_BUILD_ROOT ?? join(APP_ROOT, '.desktop-build')
+ const SUPPORTED_TARGETS = new Set(['mac-arm64', 'mac-x64', 'win-x64'])
+ 
+ /**
+diff --git a/apps/desktop/scripts/runtime-file-policy.ts b/apps/desktop/scripts/runtime-file-policy.ts
+index 1bc16b2a1c..c0bd88f40f 100644
+--- a/apps/desktop/scripts/runtime-file-policy.ts
++++ b/apps/desktop/scripts/runtime-file-policy.ts
+@@ -20,6 +20,7 @@ export function desktopRuntimeFileExclusion(
+   if (/\.(?:[cm]?[jt]s|css)\.map$/u.test(file)) return 'source map'
+   if (/\.d\.[cm]?ts$/u.test(file)) return 'TypeScript declaration'
+   if (/\.tsbuildinfo$/u.test(file)) return 'TypeScript build cache'
++  if (file === '.gitkeep') return 'git placeholder'
+   const packageParts = parts.slice(parts.lastIndexOf('node_modules') + 1)
+   const nameParts = packageParts[0]?.startsWith('@') ? 2 : 1
+   const name = packageParts.slice(0, nameParts).join('/')
+diff --git a/apps/desktop/src/core-package-set.ts b/apps/desktop/src/core-package-set.ts
+index 2d6308f263..4670228148 100644
+--- a/apps/desktop/src/core-package-set.ts
++++ b/apps/desktop/src/core-package-set.ts
+@@ -18,6 +18,16 @@ export const DESKTOP_HOST_RUNTIME_FILES = [
+   'lib/index.js',
+ ] as const
+ 
++/**
++ * Published npm bundles the packaged Desktop installs and switches on in every profile.
++ * Key: package name. Value: semver range resolved from the registry at build time.
++ * The runtime activates one only when its package is present, so a development run
++ * that links the workspace instead of the packaged runtime is unaffected.
++ */
++export const DESKTOP_EMBEDDED_BUNDLES: Readonly<Record<string, string>> = {
++  '@dsh-plugins-xz/llm-wiki': '^0.1.7',
++}
++
+ /** One immutable npm tarball in the Desktop core package set. */
+ export interface DesktopCorePackageRecord {
+   readonly name: string
+diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-manager.ts
+index 270d87d6b2..613a7dedfd 100644
+--- a/apps/desktop/src/project-manager.ts
++++ b/apps/desktop/src/project-manager.ts
+@@ -15,6 +15,7 @@ import {
+ } from 'node:fs'
+ import { join } from 'node:path'
+ import {
++  DESKTOP_EMBEDDED_BUNDLES,
+   DESKTOP_HOST_PACKAGE,
+   desktopCorePackageOverrides,
+   verifyDesktopCorePackageSet,
+@@ -31,6 +32,11 @@ const DSH_PACKAGE = '@deepseek-ai/dsh'
+ const CORE_BUILD_PACKAGE = '@deepseek-ai/dsh-subprocess-local'
+ const WEB_PROFILE = PROFILE_TEMPLATES.web as ProfileTemplate
+ const WORKSPACE_SETTINGS = 'nodeLinker: hoisted\nautoInstallPeers: false\n'
++
++/** Shipped web-profile bundles plus out-of-tree bundles already present in the runtime. */
++function profileBundles(extra: readonly string[] = []): string[] {
++  return [...WEB_PROFILE.bundles, ...extra]
++}
+ function writeJson(path: string, value: unknown): void {
+   writeFileSync(path, `${JSON.stringify(value, undefined, 2)}\n`, { mode: 0o600 })
+ }
+@@ -45,7 +51,7 @@ function workspaceFile(overrides: Readonly<Record<string, string>> = {}): string
+   const coreBuildKey = coreBuildSpec === undefined
+     ? CORE_BUILD_PACKAGE
+     : `${CORE_BUILD_PACKAGE}@${coreBuildSpec.replace('file:./', 'file:')}`
+-  return `packages:\n  - .\n\n${overrideSection}${WORKSPACE_SETTINGS}allowBuilds:\n  node-pty: true\n  koffi: true\n  fs-ext: true\n  ${JSON.stringify(coreBuildKey)}: true\n  '@google/genai': false\n  protobufjs: false\n  node-addon-require-builtin: false\n`
++  return `packages:\n  - .\n\n${overrideSection}${WORKSPACE_SETTINGS}allowBuilds:\n  node-pty: true\n  koffi: true\n  fs-ext: true\n  ${JSON.stringify(coreBuildKey)}: true\n  onnxruntime-node: true\n  tesseract.js: true\n  '@google/genai': false\n  protobufjs: false\n  node-addon-require-builtin: false\n`
+ }
+ 
+ function migrateProfileSettings(projectDir: string): void {
+@@ -74,7 +80,17 @@ export class DesktopProjectManager {
+    * @returns Backup path after the locked profile write, or undefined if the patch was absent.
+    */
+   async disableAllPlugins(): Promise<string | undefined> {
+-    return this.withLock(() => sanitizeProfile('dsh', this.paths.profile, WEB_PROFILE.bundles))
++    return this.withLock(() => sanitizeProfile('dsh', this.paths.profile, profileBundles(this.embeddedBundles())))
++  }
++
++  /**
++   * Embedded out-of-tree bundles the bundled runtime actually supplies.
++   * A development run links the workspace instead of a packaged runtime, so the
++   * packages are absent there and must not be written into that profile.
++   */
++  private embeddedBundles(): readonly string[] {
++    const modules = join(this.runtime.dsh, 'node_modules')
++    return Object.keys(DESKTOP_EMBEDDED_BUNDLES).filter(name => existsSync(join(modules, name, 'package.json')))
+   }
+ 
+   /**
+@@ -85,7 +101,7 @@ export class DesktopProjectManager {
+       // Validation only: an unreadable or mismatched runtime descriptor stops preparation before the Host starts.
+       readDesktopRuntime(this.runtime.dsh)
+       migrateProfileSettings(this.paths.profile)
+-      createPluginProfile(this.paths.profile)
++      createPluginProfile(this.paths.profile, this.embeddedBundles())
+       removeLinkProjections(this.paths.profile)
+     })
+   }
+@@ -138,8 +154,8 @@ export function createRuntimeProjectMetadata(projectDir: string, release: Deskto
+     name: PROJECT_NAME,
+     private: true,
+     version: '0.0.0',
+-    dependencies: desktopCorePackageOverrides(packageSet),
+-    dsh: { profile: { bundles: [...WEB_PROFILE.bundles] } },
++    dependencies: { ...desktopCorePackageOverrides(packageSet), ...DESKTOP_EMBEDDED_BUNDLES },
++    dsh: { profile: { bundles: profileBundles(Object.keys(DESKTOP_EMBEDDED_BUNDLES)) } },
+   }
+   writeJson(join(projectDir, 'package.json'), manifest)
+   writeFileSync(
+@@ -170,7 +186,11 @@ export function createDevelopmentProjectMetadata(projectDir: string, release: De
+   writeFileSync(join(projectDir, 'pnpm-workspace.yaml'), workspaceFile(), { mode: 0o600 })
+ }
+ 
+-/** Create the first external plugin profile without running a package manager. */
+-export function createPluginProfile(projectDir: string): void {
+-  initProfile(projectDir, WEB_PROFILE.bundles)
++/**
++ * Create the first external plugin profile without running a package manager.
++ * @param projectDir - Profile directory.
++ * @param extra - Out-of-tree bundles already present in the runtime, appended to the shipped ones.
++ */
++export function createPluginProfile(projectDir: string, extra: readonly string[] = []): void {
++  initProfile(projectDir, profileBundles(extra))
+ }

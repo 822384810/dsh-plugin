@@ -1,0 +1,38 @@
+# llm-wiki 的组合层（profile 通过 package.json 的 dsh.bundle.patch 加载本文件）。
+#
+# name 写 scope 包名（@dsh-plugins-xz/llm-wiki）：装进 profile 后
+# （dsh plugin --profile <p> add <path>）解析到 profile 的
+# node_modules/@dsh-plugins-xz/llm-wiki，客户端半区也才能被 __DSH_BOOT__ 扫描到。
+#
+# 默认值见 README「配置」一节；这里只列出部署最常改的几项。
+- insert:
+    - id: llm-wiki
+      name: '@dsh-plugins-xz/llm-wiki'
+      config:
+        chunkSize: 800
+        chunkOverlap: 100
+        topK: 10
+        watch: true
+        ambientTopK: 5
+        ambientMaxChars: 2000
+        maxUploadBytes: 52428800
+        # 扫描版 PDF 的 OCR：语言留空则用插件自带 tessdata/（内置 chi_sim、eng，可离线）。
+        # 需要其它语言或自定义数据时，指定目录或 URL：
+        # ocrLanguages: chi_sim+eng
+        # ocrLangPath: D:/tessdata
+        # 追加为纯文本源的扩展名（可带或不带点）；内置类型见 README。
+        # extraSourceExtensions: [rst, adoc]
+        # 需要 LLM 参与 Wiki 编译时再打开（留空则跟随每个知识库在面板里选的模型 / DSH 默认模型）：
+        # compileProvider: deepseek
+        # compileModel: deepseek-chat
+        # 编译分窗：每次送入模型的字数，以及单个来源最多编译多少窗（超出部分跳过并在日志告警）。
+        # compileWindowChars: 20000
+        # compileMaxWindows: 200
+        # compileMaxTokens: 8000
+
+# 开发期只调 Host 半区时，也可以改用 --patch 覆盖层直接指向源码构建产物（绝对路径）
+# —— 注意此时客户端半区不可用（file URL 没有包名，扫描不到 dsh.client）：
+#
+# - insert:
+#     - id: llm-wiki
+#       name: file:///<dsh-plugin>/plugins/llm-wiki/lib/index.js

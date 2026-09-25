@@ -1,6 +1,6 @@
 {
   "name": "@dsh-plugins-xz/time-utils",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "Canonical clock shared by every DSH plugin: the single source of truth for timestamps.",
   "type": "module",
   "license": "MIT",

@@ -5,8 +5,8 @@
  * package needs no install-time dependency on the harness checkout.
  */
 /**
- * Minimum supported host release, injected by `scripts/build.mjs` from the
- * `@deepseek-ai/dsh-home-paths` peer floor in `package.json`.
+ * Minimum supported host release, injected by `packages/plugin-kit/build-plugin.mjs` from the
+ * `@deepseek-ai/dsh` peer floor in `package.json`.
  */
 declare const __MINIMUM_HOST_VERSION__: string
 
@@ -85,7 +85,7 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
   ): ReactElement
 
   /** Outline icon set used by the manager's add/edit/delete actions. */
-  export const IconPlusOutline16: ComponentType<{ size?: number; className?: string }>
-  export const IconEditOutline16: ComponentType<{ size?: number; className?: string }>
-  export const IconTrashOutline16: ComponentType<{ size?: number; className?: string }>
+  export const IconPlusOutlineRegular: ComponentType<{ size?: number; className?: string }>
+  export const IconEditOutlineRegular: ComponentType<{ size?: number; className?: string }>
+  export const IconTrashOutlineRegular: ComponentType<{ size?: number; className?: string }>
 }

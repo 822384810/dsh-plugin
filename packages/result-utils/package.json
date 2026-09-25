@@ -1,6 +1,6 @@
 {
   "name": "@dsh-plugins-xz/result-utils",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "Unified HTTP envelope shared by every DSH plugin: { code, msg, data } plus the host reply and client unwrap helpers.",
   "type": "module",
   "license": "MIT",
