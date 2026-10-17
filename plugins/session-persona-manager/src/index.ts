@@ -11,7 +11,7 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
-import { PersonaStore, type Persona } from './store.ts'
+import { PersonaStore, DEFAULT_PERSONA_ID, type Persona } from './store.ts'
 import type { PluginContext, ToolDefinition } from './types.ts'
 import { createLogger, type Logger } from '@dsh-plugins-xz/log-utils'
 import { ResultCode, reply } from '@dsh-plugins-xz/result-utils'
@@ -178,6 +178,13 @@ export function apply(ctx: PluginContext): void {
   ctx.effect(() => ctx.tools.register(personaTool(store)), `${name}: ${PERSONA_TOOL}`)
 
   ctx.on('agent/created', ({ agent }) => {
+    // Apply the default persona for new sessions before the first prompt assembles. Only
+    // sessions with no explicit binding get it, so a later manual pick still wins. Writing the
+    // binding here (rather than a separate flag) also makes the header picker show it selected.
+    if (store.forSession(agent.session.id) === undefined) {
+      const def = store.getDefaultPersonaId()
+      if (def !== null && def !== DEFAULT_PERSONA_ID) store.assign(agent.session.id, def)
+    }
     // Registered through the agent's own context: the agent owns the section's lifetime, so it
     // disappears with that agent instead of leaking into the process-wide prompt. The text is a
     // live reader, so a persona bound mid-session reaches the next assembly of this agent's
@@ -267,5 +274,33 @@ export function apply(ctx: PluginContext): void {
           : reply(ResultCode.OK, 'ok', view(bound))
       },
     }), `${name}: GET|POST ${ROUTE_PREFIX}/session`)
+
+    webCtx.effect(() => webCtx.connection.fetch.register({
+      path: `${ROUTE_PREFIX}/default`,
+      methods: ['GET', 'POST'],
+      requestBody: 'buffered',
+      fetch: async (request) => {
+        if (request.method !== 'POST') {
+          const id = store.getDefaultPersonaId()
+          const current = id === null || id === DEFAULT_PERSONA_ID ? null : store.find(id)
+          if (current === undefined || current === null) return reply(ResultCode.OK, 'ok', null)
+          return reply(ResultCode.OK, 'ok', view(current))
+        }
+        const body = await request.json() as { personaId?: unknown }
+        if (typeof body.personaId !== 'string') {
+          return reply(ResultCode.PARAM_ERR, 'personaId is required')
+        }
+        // The reserved id clears the default to "no persona"; everything else must be a real persona.
+        if (body.personaId === DEFAULT_PERSONA_ID || body.personaId === '') {
+          store.setDefaultPersonaId(DEFAULT_PERSONA_ID)
+          return reply(ResultCode.OK, 'ok', null)
+        }
+        if (!store.setDefaultPersonaId(body.personaId)) {
+          return reply(ResultCode.FAIL, `unknown persona: ${body.personaId}`)
+        }
+        const persona = store.find(body.personaId)
+        return reply(ResultCode.OK, 'ok', persona === undefined ? null : view(persona))
+      },
+    }), `${name}: GET|POST ${ROUTE_PREFIX}/default`)
   })
 }

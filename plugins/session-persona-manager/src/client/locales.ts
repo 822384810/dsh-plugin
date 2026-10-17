@@ -26,6 +26,9 @@ export const zh = {
   'panel.contentPlaceholder': '请输入你的人格内容',
   'panel.nameRequired': '名称不能为空',
   'panel.defaultTag': '默认',
+  'footer.open': '新会话默认人格',
+  'footer.current': '新会话默认',
+  'footer.none': '默认（无人格）',
 }
 
 /** English dictionary. */
@@ -51,6 +54,9 @@ export const en: Record<PersonaKey, string> = {
   'panel.contentPlaceholder': 'Enter your persona content',
   'panel.nameRequired': 'Name is required',
   'panel.defaultTag': 'Default',
+  'footer.open': 'Default persona for new sessions',
+  'footer.current': 'New-session default',
+  'footer.none': 'Default (no persona)',
 }
 
 /** Translation keys this plugin owns. */

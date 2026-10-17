@@ -26,6 +26,10 @@ export interface PersonaBarInjected {
   create: (name: string, content: string) => Promise<PersonaView>
   update: (id: string, name: string, content: string) => Promise<PersonaView>
   remove: (id: string) => Promise<void>
+  /** Read the persona applied to new sessions, or null when it is "no persona". */
+  getDefault: () => Promise<PersonaView | null>
+  /** Set the persona applied to new sessions ('default' clears to no persona). */
+  setDefault: (personaId: string) => Promise<PersonaView | null>
 }
 
 /** Props: session scope from the slot framework, copy from the locale namespace, data from the plugin. */

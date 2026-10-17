@@ -7,6 +7,7 @@
  * @module session-persona-manager/client
  */
 import { PersonaBar, type PersonaBarInjected, type PersonaView } from './PersonaBar.tsx'
+import { PersonaDefaultFooter } from './PersonaDefaultFooter.tsx'
 import { en, NS, zh } from './locales.ts'
 import type { ClientContext } from '../types.ts'
 import { unwrap } from '@dsh-plugins-xz/result-utils'
@@ -22,6 +23,9 @@ const ROUTE_PREFIX = '/api/session-persona-manager'
 
 /** Slot this half fills: a list entry in the session header, scoped to one session. */
 const SLOT = 'conversation.session.header.actions'
+
+/** Slot this half fills: a root-scoped action at the sidebar foot, always visible. */
+const FOOTER_SLOT = 'sidebar.footer.action'
 
 /** Transport for the persona panel; created once so component props stay referentially stable. */
 function personaActions(): PersonaBarInjected {
@@ -65,6 +69,16 @@ function personaActions(): PersonaBarInjected {
         body: JSON.stringify({ op: 'delete', id }),
       }))
     },
+    async getDefault(): Promise<PersonaView | null> {
+      return (await unwrap<PersonaView | null>(await fetch(`${ROUTE_PREFIX}/default`))) ?? null
+    },
+    async setDefault(personaId: string): Promise<PersonaView | null> {
+      return (await unwrap<PersonaView | null>(await fetch(`${ROUTE_PREFIX}/default`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ personaId }),
+      }))) ?? null
+    },
   }
 }
 
@@ -82,4 +96,11 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
     inject: () => actions,
   }, PersonaBar))
+  ctx.slots.inject(FOOTER_SLOT, () => ctx.slots.register({
+    name: FOOTER_SLOT,
+    id: 'session-persona-manager-default',
+    order: 30,
+    locale: NS,
+    inject: () => actions,
+  }, PersonaDefaultFooter))
 }

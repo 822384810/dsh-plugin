@@ -29,7 +29,12 @@ export interface Persona {
 interface StoredState {
   personas: Persona[]
   sessionAssignments: Record<string, string>
+  /** Persona id applied to every new session that has no explicit binding yet; null = unset. */
+  defaultPersonaId: string | null
 }
+
+/** Always-available persona that injects nothing; selecting it is how a session returns to the default. */
+export const DEFAULT_PERSONA_ID = 'default'
 
 /** Always-available persona that injects nothing; selecting it is how a session returns to the default. */
 const DEFAULT_PERSONA: Persona = {
@@ -188,14 +193,34 @@ export class PersonaStore {
     return true
   }
 
+  /** The persona id applied to new sessions that have no explicit binding yet, or null when unset. */
+  getDefaultPersonaId(): string | null {
+    return this.state.defaultPersonaId
+  }
+
+  /**
+   * Set the persona applied to every new session that has no explicit binding.
+   * Accepts a real active persona id or {@link DEFAULT_PERSONA_ID} (meaning
+   * "no persona"); rejects unknown ids so a stray default never lingers.
+   * @returns true when the default was updated (or cleared to the no-persona sentinel).
+   */
+  setDefaultPersonaId(personaId: string): boolean {
+    if (personaId !== DEFAULT_PERSONA_ID && this.find(personaId) === undefined) return false
+    this.state.defaultPersonaId = personaId
+    this.persist()
+    return true
+  }
+
   private load(): StoredState {
     let personas: Persona[] = [...SEED_PERSONAS]
     let sessionAssignments: Record<string, string> = {}
+    let defaultPersonaId: string | null = null
     try {
       const parsed = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<StoredState>
       // Map so records written before these fields existed still load cleanly.
       personas = (parsed.personas ?? personas).map(normalizePersona)
       sessionAssignments = parsed.sessionAssignments ?? {}
+      defaultPersonaId = typeof parsed.defaultPersonaId === 'string' ? parsed.defaultPersonaId : null
     } catch {
       // Missing or unreadable document: start from the seed without failing the plugin.
     }
@@ -203,7 +228,7 @@ export class PersonaStore {
     if (!personas.some(persona => persona.id === DEFAULT_PERSONA.id)) {
       personas = [DEFAULT_PERSONA, ...personas]
     }
-    return { personas, sessionAssignments }
+    return { personas, sessionAssignments, defaultPersonaId }
   }
 
   private persist(): void {

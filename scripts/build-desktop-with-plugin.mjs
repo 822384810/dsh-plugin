@@ -5,8 +5,9 @@
  * The Desktop activates only the bundles its installer ships, and that list is a code
  * constant in the harness, so embedding a plugin needs a source change in the harness
  * checkout. This script keeps that change out of the harness repository: it applies
- * `patches/desktop-embed-plugin.patch`, runs the packaging command, then reverts the
- * patch — also when the build fails or is interrupted.
+ * `patches/desktop-embed-plugin.patch`, recompiles the patched sources into the Desktop's
+ * `lib/` (the app runs `lib/main.js`, not `src`), runs the packaging command, then reverts
+ * the patch and restores a clean `lib/` — also when the build fails or is interrupted.
  *
  * Prerequisites:
  *   - the plugin is published to the registry the harness resolves (the patch pins a
@@ -14,11 +15,16 @@
  *   - the harness checkout is clean and its desktop toolchain is set up.
  *
  * Regenerating the patch after changing which plugin/version to embed:
- *   1. make the same two-file edit in the harness checkout
- *      (`apps/desktop/src/core-package-set.ts`, `apps/desktop/src/project-manager.ts`);
+ *   1. make the same four-file edit in the harness checkout
+ *      (`apps/desktop/src/core-package-set.ts`, `apps/desktop/src/project-manager.ts`,
+ *       `apps/desktop/scripts/runtime-file-policy.ts`, `apps/desktop/scripts/desktop-build-paths.mjs`);
  *   2. from the harness checkout run
- *      `git diff --output=<dsh-plugin>/patches/desktop-embed-plugin.patch -- apps/desktop/src/core-package-set.ts apps/desktop/src/project-manager.ts`;
- *   3. `git checkout -- apps/desktop/src/core-package-set.ts apps/desktop/src/project-manager.ts`.
+ *      `git diff --output=<dsh-plugin>/patches/desktop-embed-plugin.patch -- apps/desktop/src/core-package-set.ts apps/desktop/src/project-manager.ts apps/desktop/scripts/runtime-file-policy.ts apps/desktop/scripts/desktop-build-paths.mjs`;
+ *   3. `git checkout -- apps/desktop/src/core-package-set.ts apps/desktop/src/project-manager.ts apps/desktop/scripts/runtime-file-policy.ts apps/desktop/scripts/desktop-build-paths.mjs`.
+ *
+ * Note: the patch's `src/*.ts` edits only take effect because this script recompiles
+ * `lib/` (via the desktop `build` script) after applying the patch. A bare `git apply`
+ * without recompiling leaves the running `lib/main.js` unchanged.
  *
  * Usage: node scripts/build-desktop-with-plugin.mjs [options] [-- <extra pnpm args>]
  *
@@ -97,6 +103,27 @@ function git(harness, args) {
 }
 
 /**
+ * Run a pnpm command in the harness checkout, streaming output.
+ * @param {string} harness - Harness repository path.
+ * @param {readonly string[]} args - pnpm arguments.
+ * @returns {Promise<number>} Process exit code.
+ */
+function runPnpm(harness, args) {
+  return new Promise((resolvePromise) => {
+    const child = spawn('pnpm', args, {
+      cwd: harness,
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    })
+    child.once('error', (error) => {
+      console.error(`[embed] failed to start pnpm: ${error.message}`)
+      resolvePromise(1)
+    })
+    child.once('exit', (code) => resolvePromise(code ?? 1))
+  })
+}
+
+/**
  * Read the repository-relative paths a unified diff writes.
  * @param {string} body - Patch text.
  * @returns {string[]} Sorted unique `a/`-relative paths.
@@ -147,8 +174,17 @@ async function embed() {
   if (applied.status !== 0) throw new Error(`failed to apply patch:\n${applied.stderr.trim()}`)
   console.log(`[embed] applied ${patch}`)
 
+  // The Desktop runs its compiled lib/main.js, not src/*.ts, and `package` does not recompile.
+  // Embed the patch into the runtime by recompiling the patched sources into lib before packaging.
+  console.log('[embed] compiling patched desktop sources (pnpm --filter ' + filter + ' run build)')
+  const buildCode = await runPnpm(harness, ['--filter', filter, 'run', 'build'])
+  if (buildCode !== 0) {
+    revertPatch()
+    return buildCode
+  }
+
   let restored = false
-  const restore = () => {
+  const revertPatch = () => {
     if (restored) return
     restored = true
     const reverse = git(harness, ['apply', '--reverse', patch])
@@ -158,18 +194,26 @@ async function embed() {
     }
     const after = git(harness, ['status', '--porcelain', '--', ...paths])
     if (after.stdout.trim() !== '') console.warn(`[embed] WARNING: harness still modified:\n${after.stdout.trim()}`)
-    else console.log('[embed] harness restored to HEAD')
+    else console.log('[embed] harness source restored to HEAD')
+  }
+  const restore = async () => {
+    revertPatch()
+    if (options.keep) return
+    // Restore a clean lib so the compiled output matches HEAD again (lib/ is gitignored).
+    console.log('[embed] restoring clean lib (recompile from HEAD sources)')
+    const code = await runPnpm(harness, ['--filter', filter, 'run', 'build'])
+    if (code !== 0) console.warn('[embed] WARNING: clean rebuild failed; lib/ may still reflect the patch')
   }
 
   if (options.dryRun) {
-    restore()
+    revertPatch()
     console.log('[embed] --dry-run: patch validated and reverted, nothing was built')
     return 0
   }
 
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.once(signal, () => {
-      restore()
+      revertPatch()
       process.exit(130)
     })
   }
@@ -191,7 +235,7 @@ async function embed() {
   })
 
   if (options.keep) console.log('[embed] --keep: the patch is still applied')
-  else restore()
+  else await restore()
   return exitCode
 }
 
