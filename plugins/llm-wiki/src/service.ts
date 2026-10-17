@@ -903,8 +903,12 @@ export class WikiService {
     }
     return {
       state: target === undefined
-        ? { pending: [], jobs: {} }
-        : { pending: [...target.ingest.pending()], jobs: { ...target.ingest.jobs() } },
+        ? { pending: [], jobs: {}, paused: false }
+        : {
+            pending: [...target.ingest.pending()],
+            jobs: { ...target.ingest.jobs() },
+            paused: target.ingest.isPaused(),
+          },
       othersBusy,
     }
   }

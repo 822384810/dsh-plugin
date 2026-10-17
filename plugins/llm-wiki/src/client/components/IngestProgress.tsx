@@ -26,9 +26,13 @@ export interface IngestProgressProps {
   readonly state: IngestLibraryState
   /** How many other libraries still have work in flight. */
   readonly othersBusy: number
+  /** Pause this library's ingestion (the in-flight file finishes first). */
+  readonly onPause: () => void
+  /** Resume this library's ingestion. */
+  readonly onResume: () => void
 }
 
-export function IngestProgress({ state, othersBusy, t, libId }: IngestProgressProps): ReactElement | null {
+export function IngestProgress({ state, othersBusy, t, libId, onPause, onResume }: IngestProgressProps): ReactElement | null {
   const [expanded, setExpanded] = useState(false)
   /** How many rows the expanded list may render so far; raised a batch at a time. */
   const [limit, setLimit] = useState(ROW_BATCH)
@@ -64,19 +68,24 @@ export function IngestProgress({ state, othersBusy, t, libId }: IngestProgressPr
       ? 'var(--dsw-alias-state-error-primary)'
       : 'var(--dsw-alias-state-success-primary)'
 
+  const paused = state.paused
+  const label = paused
+    ? `⏸ ${t('progress.paused')}`
+    : inFlight ? t('progress.title') : failed > 0 ? `✗ ${t('progress.doneWithFail')}` : `✓ ${t('progress.done')}`
+
   const headline = (
     <>
       <span
         style={{
           fontSize: inFlight ? FONT_SIZE_SMALL : FONT_SIZE_BODY,
           opacity: inFlight ? 0.6 : 1,
-          color: inFlight
+          color: paused || inFlight
             ? undefined
             : failed > 0 ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-success-primary)',
           flex: '0 0 auto',
         }}
       >
-        {inFlight ? t('progress.title') : failed > 0 ? `✗ ${t('progress.doneWithFail')}` : `✓ ${t('progress.done')}`}
+        {label}
       </span>
       <div style={{ flex: 1, minWidth: 40, height: 6, background: 'var(--dsw-alias-bg-mask-2)', borderRadius: 3 }}>
         <div style={{
@@ -88,6 +97,11 @@ export function IngestProgress({ state, othersBusy, t, libId }: IngestProgressPr
         }}
         />
       </div>
+      {paused
+        ? <Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onResume() }} title={t('progress.resume')}>{t('progress.resume')}</Button>
+        : inFlight && (
+          <Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onPause() }} title={t('progress.pause')}>{t('progress.pause')}</Button>
+        )}
       <span style={{ flex: '0 0 auto', fontSize: FONT_SIZE_SMALL, opacity: 0.7, whiteSpace: 'nowrap' }}>
         {`${String(settled)} / ${String(total)}`}
       </span>

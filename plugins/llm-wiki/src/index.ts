@@ -732,6 +732,8 @@ async function dispatch(
       return { content: await service.schemaUpdate(str(args, 'libId'), args['form'] as SchemaForm) }
 
     case 'ingest_state': return service.ingestStates(str(args, 'libId'))
+    case 'ingest_pause': _queue.pause(str(args, 'libId')); return { ok: true }
+    case 'ingest_resume': _queue.resume(str(args, 'libId')); return { ok: true }
     default: throw new Error(`unknown endpoint: ${endpoint}`)
   }
 }

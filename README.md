@@ -110,7 +110,7 @@ pnpm run pack:all     # 生成 .tgz 到 ../../dist（发布前自检）
 # 在 harness checkout 里执行；persona-dev 从 web 模板初始化，不影响你的 web profile
 cd <harness>
 pnpm dsh --profile persona-dev --from-default-profile web --dump-config   # 只初始化，不启动
-pnpm dsh plugin --profile persona-dev add <dsh-plugin>/dsh-plugins-xz-session-persona-manager-0.1.5.tgz
+pnpm dsh plugin --profile persona-dev add <dsh-plugin>/dsh-plugins-xz-session-persona-manager-0.2.1.tgz
 pnpm dsh --profile persona-dev            # 启动，浏览器打开它打印的 ?token=... URL
 ```
 

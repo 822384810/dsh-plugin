@@ -34,7 +34,7 @@ pnpm pack --pack-destination ..\..\..\dist
 
 cd <harness>
 pnpm dsh --profile wiki-dev --from-default-profile web --dump-config
-pnpm dsh plugin --profile wiki-dev add <dsh-plugin>\dist\dsh-plugins-xz-llm-wiki-0.1.5.tgz
+pnpm dsh plugin --profile wiki-dev add <dsh-plugin>\dist\dsh-plugins-xz-llm-wiki-0.2.1.tgz
 pnpm dsh --profile wiki-dev
 ```
 

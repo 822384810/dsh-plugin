@@ -95,11 +95,31 @@ export class IngestQueue {
     let count = 0
     for (const library of this.deps.registry.list()) {
       const runtime = this.deps.registry.get(library.id)
-      if (runtime === undefined || runtime.ingest.pendingCount === 0) continue
+      if (runtime === undefined || runtime.ingest.pendingCount === 0 || runtime.ingest.isPaused()) continue
       void this.drain(library.id)
       count += 1
     }
     return count
+  }
+
+  /**
+   * Pause one library's ingestion. The file currently in flight finishes, then the drain stops
+   * pulling new work; the flag is persisted by the store, so a restart keeps the library paused.
+   * @param libId - Library to pause.
+   */
+  pause(libId: string): void {
+    this.deps.registry.get(libId)?.ingest.setPaused(true)
+  }
+
+  /**
+   * Resume one library's ingestion; safe to call whether or not it was paused.
+   * @param libId - Library to resume.
+   */
+  resume(libId: string): void {
+    const library = this.deps.registry.get(libId)
+    if (library === undefined) return
+    library.ingest.setPaused(false)
+    void this.drain(libId)
   }
 
   /**
@@ -134,7 +154,10 @@ export class IngestQueue {
     )
     const text = normalizeText(parsed.text)
     if (text === '') {
-      this.fail(library, rel, '文件没有可索引的文本内容')
+      // `parser` tells us which path ran: `pdf` means a (near-)empty text layer with OCR never triggered,
+      // `pdf-ppocr`/`pdf-ocr` means OCR ran but returned nothing — the distinction is the whole diagnosis.
+      this.deps.log.warn(`ingest produced no indexable text for ${library.id}/${rel} (parser=${parsed.parser})`)
+      this.fail(library, rel, `文件没有可索引的文本内容（解析方式：${parsed.parser}）`)
       return NOTHING
     }
 
@@ -172,12 +195,16 @@ export class IngestQueue {
     this.draining.add(libId)
     try {
       for (;;) {
+        // A pause takes effect after the file in flight finishes, so an in-progress ingest is never
+        // cut short mid-step — only the next dequeue is skipped.
+        if (library.ingest.isPaused()) break
         const next = library.ingest.dequeue()
         if (next === undefined) break
         try {
           await this.ingestFile(library, next.rel, next.force)
         } catch (error) {
-          this.deps.log.error(`ingest failed for ${next.rel}: ${String(error)}`)
+          const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
+          this.deps.log.error(`ingest failed for ${library.id}/${next.rel}: ${detail}`)
           this.fail(library, next.rel, String(error))
         }
       }

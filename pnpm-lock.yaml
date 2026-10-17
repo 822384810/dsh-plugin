@@ -56,6 +56,9 @@ importers:
       mammoth:
         specifier: ^1.8.0
         version: 1.12.3
+      mupdf:
+        specifier: ^1.24.0
+        version: 1.28.1
       onnxruntime-node:
         specifier: ^1.30.0
         version: 1.30.0
@@ -492,6 +495,9 @@ packages:
     resolution: {integrity: sha512-S6x5wmcDmsDRRU/c2dkccDwQPXoFczc5+HpQ2lON8pnvHlnvHAHj5WlLVvw6n6vNyHuVugYrFohYxbS+pvFpKQ==}
     engines: {node: '>=10'}
 
+  mupdf@1.28.1:
+    resolution: {integrity: sha512-Gi11Ow2G1SlrXKJNZBL1eAIGFVih5+4ZKqjptamTVaj/5hnlrcVrVbyb7lHE2lfFKdxZPyv9ZtfOOq7XgjzEig==}
+
   node-fetch@2.7.0:
     resolution: {integrity: sha512-c4FRfUm/dbcWZ7U+1Wq0AwCyFL+3nt2bEw05wfxSz+DWpWsitgmSgYmy2dQdWyKC1694ELPqMs/YzUSNozLt8A==}
     engines: {node: 4.x || >=6.0.0}
@@ -904,6 +910,8 @@ snapshots:
   matcher@4.0.0:
     dependencies:
       escape-string-regexp: 4.0.0
+
+  mupdf@1.28.1: {}
 
   node-fetch@2.7.0:
     dependencies:

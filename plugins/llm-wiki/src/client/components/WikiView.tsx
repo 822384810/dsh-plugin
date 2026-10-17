@@ -216,6 +216,8 @@ export function WikiView({ listPages, fsRead, fsWrite, recompile, recompileAll, 
   // still opens on something readable.
   const [openTypes, setOpenTypes] = useState<ReadonlySet<string>>(() => new Set<string>())
   const [openDirs, setOpenDirs] = useState<ReadonlySet<string>>(() => new Set<string>())
+  // Folders the user has collapsed while a filter is active; they otherwise stand open so matches show.
+  const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(() => new Set<string>())
   const [hoverType, setHoverType] = useState<string | null>(null)
   const [hoverDir, setHoverDir] = useState<string | null>(null)
   // Free-text filter over title, type and path. A large library is meant to be searched rather than
@@ -223,14 +225,24 @@ export function WikiView({ listPages, fsRead, fsWrite, recompile, recompileAll, 
   const [query, setQuery] = useState('')
   // How many rows each group has been allowed to render so far, raised a batch at a time.
   const [limits, setLimits] = useState<Readonly<Record<string, number>>>({})
+  /**
+   * Modification-status filter over the `edited` flag. `all` keeps every page; `edited` keeps only
+   * hand-edited pages; `unedited` keeps only the untouched ones. Defaults to `all`.
+   */
+  const [modFilter, setModFilter] = useState<'all' | 'edited' | 'unedited'>('all')
 
   const needle = query.trim().toLowerCase()
   const searching = needle !== ''
+  /** Whether any filter (text or modification status) is narrowing the list. */
+  const filtering = searching || modFilter !== 'all'
 
   // Pages are filed by the `type` their frontmatter declares, so a library holding hundreds of
   // entities reads as a handful of headings instead of one endless column.
   const groups = useMemo<readonly TypeGroup[]>(() => {
-    const matched = needle === '' ? pages : pages.filter(page => matchesQuery(t, page, needle))
+    const matched = pages.filter(page =>
+      matchesQuery(t, page, needle)
+      && (modFilter === 'all' || (modFilter === 'edited') === page.edited),
+    )
     const byType = new Map<string, WikiPage[]>()
     for (const page of matched) {
       const bucket = byType.get(page.type)
@@ -240,7 +252,7 @@ export function WikiView({ listPages, fsRead, fsWrite, recompile, recompileAll, 
     return [...byType]
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([type, items]) => ({ type, pages: items }))
-  }, [needle, pages, t])
+  }, [needle, pages, t, modFilter])
 
   /** How many pages survived the filter. */
   const matched = useMemo(
@@ -258,11 +270,15 @@ export function WikiView({ listPages, fsRead, fsWrite, recompile, recompileAll, 
   useEffect(() => {
     setOpenTypes(new Set<string>())
     setOpenDirs(new Set<string>())
+    setCollapsedDirs(new Set<string>())
   }, [libId])
 
   // A fresh query gets a fresh first batch, otherwise a group revealed earlier would flood the list
   // with exactly the rows the batch limit exists to hold back.
-  useEffect(() => { setLimits({}) }, [needle])
+  useEffect(() => { setLimits({}) }, [needle, modFilter])
+
+  // A fresh query or change of modification filter shows every matching folder open again.
+  useEffect(() => { setCollapsedDirs(new Set<string>()) }, [needle, modFilter])
 
   const toggleType = useCallback((type: string): void => {
     setOpenTypes(current => {
@@ -273,12 +289,20 @@ export function WikiView({ listPages, fsRead, fsWrite, recompile, recompileAll, 
   }, [])
 
   const toggleDir = useCallback((id: string): void => {
-    setOpenDirs(current => {
-      const next = new Set(current)
-      if (!next.delete(id)) next.add(id)
-      return next
-    })
-  }, [])
+    if (filtering) {
+      setCollapsedDirs(current => {
+        const next = new Set(current)
+        if (!next.delete(id)) next.add(id)
+        return next
+      })
+    } else {
+      setOpenDirs(current => {
+        const next = new Set(current)
+        if (!next.delete(id)) next.add(id)
+        return next
+      })
+    }
+  }, [filtering])
 
   const revealMore = useCallback((type: string): void => {
     setLimits(current => ({ ...current, [type]: (current[type] ?? ROW_BATCH) + ROW_BATCH }))
@@ -289,9 +313,9 @@ export function WikiView({ listPages, fsRead, fsWrite, recompile, recompileAll, 
     const indent = PAGE_ROW_INDENT + depth * TREE_INDENT_STEP
     const page = node.page
     if (page === null) {
-      // While filtering, a folder stands open: the user asked for every match, not for the folders
-      // they had happened to open before.
-      const open = searching || openDirs.has(node.id)
+      // While filtering, a folder stands open by default so its matches show, but an explicit
+      // collapse keeps it closed.
+      const open = filtering ? !collapsedDirs.has(node.id) : openDirs.has(node.id)
       return (
         <div key={node.id}>
           <button
@@ -594,9 +618,32 @@ export function WikiView({ listPages, fsRead, fsWrite, recompile, recompileAll, 
               color: 'var(--dsw-alias-label-primary)',
             }}
           />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: FONT_SIZE_SMALL, opacity: 0.6, whiteSpace: 'nowrap' }}>{t('wiki.modFilter')}</span>
+            <select
+              value={modFilter}
+              aria-label={t('wiki.modFilter')}
+              onChange={event => { setModFilter(event.target.value as 'all' | 'edited' | 'unedited') }}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                boxSizing: 'border-box',
+                padding: '4px 8px',
+                fontSize: FONT_SIZE_SMALL,
+                borderRadius: 6,
+                border: '1px solid var(--dsw-alias-border-l3)',
+                background: 'var(--dsw-alias-bg-layer-2)',
+                color: 'var(--dsw-alias-label-primary)',
+              }}
+            >
+              <option value="all">{t('wiki.modAll')}</option>
+              <option value="edited">{t('wiki.modEdited')}</option>
+              <option value="unedited">{t('wiki.modUnedited')}</option>
+            </select>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <span style={{ fontSize: FONT_SIZE_SMALL, opacity: 0.6 }}>
-              {searching
+              {filtering
                 ? template(t, 'wiki.filterCount', { n: matched, total: pages.length })
                 : template(t, 'wiki.count', { n: pages.length })}
             </span>
@@ -614,7 +661,7 @@ export function WikiView({ listPages, fsRead, fsWrite, recompile, recompileAll, 
           )}
         </div>
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-          {searching && groups.length === 0 && (
+          {filtering && groups.length === 0 && (
             <div style={{ padding: 8, fontSize: FONT_SIZE_SMALL, opacity: 0.6 }}>{t('wiki.filterEmpty')}</div>
           )}
           {groups.map(group => {

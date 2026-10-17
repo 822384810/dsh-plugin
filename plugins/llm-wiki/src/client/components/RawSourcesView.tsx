@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react'
 import { Button, Modal, MarkdownText, type MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import { IconDatabaseOutlineRegular, IconTrashOutlineRegular, IconFolderCloseRegular, IconFolderOpenRegular, IconPlusOutlineRegular, IconDownloadOutlineRegular, IconPaperclipOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { FsEntry, FilePreview, IngestJobState, IngestLibraryState, WikiActions } from '../api.ts'
+import type { FsEntry, FilePreview, IngestJobState, IngestLibraryState, IngestState, WikiActions } from '../api.ts'
 import type { UploadResult } from '../../shared/upload.ts'
 import type { Translate } from '../translate.ts'
 import { template } from '../translate.ts'
@@ -486,6 +486,9 @@ export function RawSourcesView({
   // Which folders are open, and what each one holds. Children are fetched when a folder is first
   // opened, so a large `raw/` tree costs nothing until it is actually browsed.
   const [openDirs, setOpenDirs] = useState<ReadonlySet<string>>(() => new Set<string>(['raw']))
+  // Folders the user has collapsed while a filter is active. They otherwise stand open so the
+  // matches show; collapsing one keeps it closed until the filter changes.
+  const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(() => new Set<string>())
   const [children, setChildren] = useState<Readonly<Record<string, readonly FsEntry[]>>>({})
   const [loadingDirs, setLoadingDirs] = useState<ReadonlySet<string>>(() => new Set<string>())
   const [hoverDir, setHoverDir] = useState<string | null>(null)
@@ -506,6 +509,13 @@ export function RawSourcesView({
   const needle = query.trim().toLowerCase()
   /** Whether a filter query is active. */
   const searching = needle !== ''
+  /**
+   * Ingest-status filter over every file's persisted queue state. `all` keeps everything; any other
+   * value keeps only files whose `jobs[path].status` matches. Defaults to `all`.
+   */
+  const [statusFilter, setStatusFilter] = useState<'all' | IngestState>('all')
+  /** Whether any filter (text or status) is narrowing the tree. */
+  const filtering = searching || statusFilter !== 'all'
 
   const labels = useMemo<MarkdownLabels>(() => ({
     code: { copyLabel: t('markdown.copy'), copiedLabel: t('markdown.copied') },
@@ -556,17 +566,28 @@ export function RawSourcesView({
     await Promise.all(dirs.map(dir => loadDir(dir)))
   }, [loadDir, openDirs])
 
-  /** Open or close a folder; opening one also makes it the upload target. */
+  /** Open or close a folder; opening one also makes it the upload target. While a filter is active a
+   * folder stands open by default, so toggling records an explicit collapse instead of touching
+   * `openDirs`. */
   const toggleDir = useCallback((dir: string): void => {
     setCurrentDir(dir)
-    setOpenDirs(current => {
-      const next = new Set(current)
-      if (next.delete(dir)) return next
-      next.add(dir)
-      return next
-    })
+    if (filtering) {
+      setCollapsedDirs(current => {
+        const next = new Set(current)
+        if (next.delete(dir)) return next
+        next.add(dir)
+        return next
+      })
+    } else {
+      setOpenDirs(current => {
+        const next = new Set(current)
+        if (next.delete(dir)) return next
+        next.add(dir)
+        return next
+      })
+    }
     if (children[dir] === undefined) void loadDir(dir)
-  }, [children, loadDir])
+  }, [children, loadDir, filtering])
 
   /** Render one more batch of a folder that was cut short. */
   const revealEntries = useCallback((dir: string): void => {
@@ -584,6 +605,8 @@ export function RawSourcesView({
     setContent('')
     setPreview(null)
     setQuery('')
+    setStatusFilter('all')
+    setCollapsedDirs(new Set<string>())
     void loadDir('raw')
   }, [loadDir])
 
@@ -783,13 +806,17 @@ export function RawSourcesView({
    * @param dir - POSIX path of the folder to test.
    * @returns True when `dir` holds a matching file or a folder that does.
    */
+  /** Whether a file entry passes the combined text + status filter. */
+  const fileMatches = (entry: FsEntry): boolean =>
+    matchesRaw(entry, needle) && (statusFilter === 'all' || jobs[entry.path]?.status === statusFilter)
+
   const subtreeHasMatch = (dir: string): boolean => {
     const list = children[dir]
     if (list === undefined) return false
     for (const entry of list) {
       if (entry.type === 'folder') {
         if (matchesRaw(entry, needle) || subtreeHasMatch(entry.path)) return true
-      } else if (matchesRaw(entry, needle)) {
+      } else if (fileMatches(entry)) {
         return true
       }
     }
@@ -798,19 +825,19 @@ export function RawSourcesView({
 
   /** Files matching the filter across the whole loaded tree. */
   const matchedFiles = useMemo(() => {
-    if (!searching) return 0
+    if (!filtering) return 0
     let total = 0
     const walk = (d: string): void => {
       const list = children[d]
       if (list === undefined) return
       for (const entry of list) {
         if (entry.type === 'folder') walk(entry.path)
-        else if (matchesRaw(entry, needle)) total += 1
+        else if (matchesRaw(entry, needle) && (statusFilter === 'all' || jobs[entry.path]?.status === statusFilter)) total += 1
       }
     }
     walk('raw')
     return total
-  }, [searching, children, needle])
+  }, [filtering, children, needle, statusFilter, jobs])
 
   /** Every file in the loaded tree, used as the denominator of the filter count. */
   const totalFiles = useMemo(() => {
@@ -859,8 +886,11 @@ export function RawSourcesView({
   // A filter is meant to span folders, not just the ones on screen, so when one is
   // active the whole tree is loaded up front.
   useEffect(() => {
-    if (searching) void loadTree()
-  }, [searching, loadTree])
+    if (searching || statusFilter !== 'all') void loadTree()
+  }, [searching, statusFilter, loadTree])
+
+  // A changed filter (text or status) shows every matching folder open again.
+  useEffect(() => { setCollapsedDirs(new Set<string>()) }, [needle, statusFilter])
 
   /**
    * Render the contents of one folder of the tree.
@@ -875,10 +905,10 @@ export function RawSourcesView({
     const all = children[dir] ?? []
     // While filtering, keep only entries that match themselves or hold a matching
     // descendant; the tree is fully loaded, so every match is reachable.
-    const list = searching
+    const list = filtering
       ? all.filter(entry => entry.type === 'folder'
         ? (matchesRaw(entry, needle) || subtreeHasMatch(entry.path))
-        : matchesRaw(entry, needle))
+        : fileMatches(entry))
       : all
     const indent = TREE_INDENT_BASE + depth * TREE_INDENT_STEP
     if (list.length === 0) {
@@ -896,9 +926,9 @@ export function RawSourcesView({
     const shown = list.slice(0, dirLimits[dir] ?? DIR_BATCH)
     const rows = shown.map(entry => {
       if (entry.type === 'folder') {
-        // While filtering, a folder stands open so its matches show without the user
-        // re-opening each one they had closed before.
-        const open = searching || openDirs.has(entry.path)
+        // While filtering, a folder stands open by default so its matches show, but an explicit
+        // collapse (recorded in `collapsedDirs`) keeps it closed.
+        const open = filtering ? !collapsedDirs.has(entry.path) : openDirs.has(entry.path)
         return (
           <div key={entry.path}>
             {/*
@@ -1132,9 +1162,34 @@ export function RawSourcesView({
               color: 'var(--dsw-alias-label-primary)',
             }}
           />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: FONT_SIZE_SMALL, opacity: 0.6, whiteSpace: 'nowrap' }}>{t('raw.statusFilter')}</span>
+            <select
+              value={statusFilter}
+              aria-label={t('raw.statusFilter')}
+              onChange={event => { setStatusFilter(event.target.value as 'all' | IngestState) }}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                boxSizing: 'border-box',
+                padding: '4px 8px',
+                fontSize: FONT_SIZE_SMALL,
+                borderRadius: 6,
+                border: '1px solid var(--dsw-alias-border-l3)',
+                background: 'var(--dsw-alias-bg-layer-2)',
+                color: 'var(--dsw-alias-label-primary)',
+              }}
+            >
+              <option value="all">{t('raw.statusAll')}</option>
+              <option value="queued">{t('raw.ingestQueued')}</option>
+              <option value="running">{t('raw.ingesting')}</option>
+              <option value="done">{t('raw.ingestDone')}</option>
+              <option value="failed">{t('raw.ingestFailed')}</option>
+            </select>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <span style={{ fontSize: FONT_SIZE_SMALL, opacity: 0.6 }}>
-              {searching
+              {filtering
                 ? template(t, 'raw.filterCount', { n: matchedFiles, total: totalFiles })
                 : template(t, 'raw.count', { n: totalFiles })}
             </span>

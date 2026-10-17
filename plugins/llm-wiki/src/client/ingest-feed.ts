@@ -24,7 +24,7 @@ const POLL_IDLE_MS = 15000
 const POLL_BUSY_MS = 3000
 
 /** The picture before any read answers, and while a newly selected library's first read is in flight. */
-const EMPTY: IngestSnapshot = { state: { pending: [], jobs: {} }, othersBusy: 0 }
+const EMPTY: IngestSnapshot = { state: { pending: [], jobs: {}, paused: false }, othersBusy: 0 }
 
 /** What a consumer of the feed gets back. */
 export interface IngestFeed {

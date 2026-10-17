@@ -70,7 +70,7 @@ pnpm --filter session-persona-manager run build
 # 装进隔离 profile（在 harness checkout 里执行）
 cd ..\deepseek-harness
 pnpm dsh --profile persona-dev --from-default-profile web --dump-config
-pnpm dsh plugin --profile persona-dev add <dsh-plugin>/dsh-plugins-xz-session-persona-manager-0.1.5.tgz
+pnpm dsh plugin --profile persona-dev add <dsh-plugin>/dsh-plugins-xz-session-persona-manager-0.2.1.tgz
 pnpm dsh --profile persona-dev
 ```
 

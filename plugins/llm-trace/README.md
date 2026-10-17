@@ -82,7 +82,7 @@ pnpm --filter llm-trace run build
 # 装进隔离 profile（在 harness checkout 里执行）
 cd ..\deepseek-harness
 pnpm dsh --profile llm-trace-dev --from-default-profile web --dump-config
-pnpm dsh plugin --profile llm-trace-dev add <dsh-plugin>/dsh-plugins-xz-llm-trace-0.1.5.tgz
+pnpm dsh plugin --profile llm-trace-dev add <dsh-plugin>/dsh-plugins-xz-llm-trace-0.2.1.tgz
 pnpm dsh --profile llm-trace-dev
 ```
 

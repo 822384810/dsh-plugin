@@ -290,6 +290,8 @@ export function WikiPanel(props: WikiPanelProps): ReactElement {
               othersBusy={ingest.othersBusy}
               t={t}
               libId={activeId}
+              onPause={() => { void actions.ingestPause(activeId ?? ''); ingest.refresh() }}
+              onResume={() => { void actions.ingestResume(activeId ?? ''); ingest.refresh() }}
             />
             <LibraryBar
         library={active}

@@ -1,6 +1,6 @@
 {
   "name": "@dsh-plugins-xz/session-persona-manager",
-  "version": "0.1.7",
+  "version": "0.2.1",
   "description": "Session-scoped persona management for DSH: bind a persona per session and inject it into the system prompt.",
   "type": "module",
   "license": "MIT",

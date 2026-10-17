@@ -1,6 +1,6 @@
 {
   "name": "@dsh-plugins-xz/llm-trace",
-  "version": "0.1.7",
+  "version": "0.2.1",
   "description": "Dump every model request the agent loop dispatches (assembled system prompt + exact message list) as readable JSON.",
   "type": "module",
   "license": "MIT",

@@ -32,6 +32,8 @@ export interface IngestLibraryState {
   readonly pending: readonly string[]
   /** One state per file, keyed by relative path. */
   readonly jobs: Readonly<Record<string, IngestJobState>>
+  /** Whether this library's ingestion is currently paused. */
+  readonly paused: boolean
 }
 
 /** One dequeued item. */
@@ -44,6 +46,8 @@ export interface QueuedJob {
 interface IngestStateDoc {
   pending: string[]
   jobs: Record<string, IngestJobState>
+  /** Whether ingestion for this library is paused; persisted so a restart honours it. */
+  paused: boolean
 }
 
 /**
@@ -158,6 +162,17 @@ export class IngestStateStore {
     this.flush()
   }
 
+  /** Pause or resume this library's ingestion; persisted so a restart keeps the choice. */
+  setPaused(value: boolean): void {
+    this.doc.paused = value
+    this.flush()
+  }
+
+  /** Whether this library's ingestion is paused. */
+  isPaused(): boolean {
+    return this.doc.paused
+  }
+
   /** Read the document, starting empty when it is missing or unreadable. */
   private read(): IngestStateDoc {
     try {
@@ -165,9 +180,10 @@ export class IngestStateStore {
       return {
         pending: Array.isArray(parsed.pending) ? parsed.pending : [],
         jobs: parsed.jobs ?? {},
+        paused: parsed.paused === true,
       }
     } catch {
-      return { pending: [], jobs: {} }
+      return { pending: [], jobs: {}, paused: false }
     }
   }
 

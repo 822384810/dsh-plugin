@@ -74,6 +74,8 @@ export interface IngestJobState {
 export interface IngestLibraryState {
   readonly pending: readonly string[]
   readonly jobs: Readonly<Record<string, IngestJobState>>
+  /** Whether this library's ingestion is currently paused. */
+  readonly paused: boolean
 }
 
 /** What one read of the ingest queue returns: the asked-for library, plus a count of busy others. */
@@ -144,6 +146,10 @@ export interface WikiActions {
 
   /** One library's queue state; pass no id and the Host reports nothing. */
   ingestStates(libId?: string): Promise<IngestSnapshot>
+  /** Pause one library's ingestion; the in-flight file finishes first. */
+  ingestPause(libId: string): Promise<void>
+  /** Resume one library's ingestion. */
+  ingestResume(libId: string): Promise<void>
   /**
    * Open the web app's directory picker for a library root.
    *
@@ -205,6 +211,8 @@ export function createWikiActions(): WikiActions {
     setCompileModel: async (libId, provider, model) => { await call('model_set', { libId, provider, model }) },
 
     ingestStates: async (libId = '') => await call('ingest_state', { libId }) as IngestSnapshot,
+    ingestPause: async (libId) => { await call('ingest_pause', { libId }) },
+    ingestResume: async (libId) => { await call('ingest_resume', { libId }) },
     // `client/index.tsx` attaches the web app's picker when the running client mounts one; until
     // then — and in a client that mounts none — a pick simply reads as cancelled.
     pickDirectory: async () => null,
