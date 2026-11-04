@@ -544,7 +544,7 @@ export class WikiService {
     const trimmed = query.trim()
     if (trimmed === '') return []
     const match = ftsQuery(trimmed)
-    const lexical = library.store.lexical(trimmed, topK * 2)
+    const lexical = library.store.lexical(trimmed, Math.max(topK * 2, 10))
     this.deps.log.debug(`[search] query=${JSON.stringify(trimmed)} fts=${JSON.stringify(match)} lexicalHits=${lexical.length}`)
     const vector = await this.queryVector(trimmed)
     const hits = hybridSearch({ chunks: library.chunks, vectors: library.vectors }, lexical, vector, topK)

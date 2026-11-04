@@ -433,7 +433,8 @@ function registerTools(ctx: PluginContext, service: WikiService): void {
           found: true,
           results: hits.map(hit => ({
             content: hit.content,
-            score: Number(hit.score.toFixed(4)),
+            score: hit.cosine === null ? Number(hit.score.toFixed(4)) : Number(hit.cosine.toFixed(4)),
+            rrfScore: Number(hit.score.toFixed(4)),
             source: hit.sourcePath,
           })),
         }, undefined, 2)

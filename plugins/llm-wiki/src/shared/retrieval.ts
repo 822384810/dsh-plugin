@@ -16,8 +16,10 @@ export interface SearchHit {
   /** 0 = identical, 1 = unrelated; only meaningful when a vector was used. */
   readonly vectorDistance: number
   readonly lexicalScore: number
-  /** Fused rank score; higher is better. */
+  /** Fused RRF rank score; higher is better. Used for ranking, NOT a 0~1 relevance. */
   readonly score: number
+  /** Cosine similarity (0~1) when a vector contributed to the hit; null for lexical-only retrieval. */
+  readonly cosine: number | null
 }
 
 /** Ranking inputs: the in-memory chunk mirror plus the vectors. */
@@ -43,10 +45,10 @@ export function hybridSearch(
   queryVec: Float32Array | null,
   topK: number,
 ): SearchHit[] {
-  const fused = new Map<string, { score: number; vectorDistance: number; lexicalScore: number }>()
+  const fused = new Map<string, { score: number; vectorDistance: number; lexicalScore: number; vector: boolean }>()
 
   lexical.forEach((hit, position) => {
-    const entry = fused.get(hit.uid) ?? { score: 0, vectorDistance: 1, lexicalScore: 0 }
+    const entry = fused.get(hit.uid) ?? { score: 0, vectorDistance: 1, lexicalScore: 0, vector: false }
     entry.score += 1 / (RRF_K + position + 1)
     entry.lexicalScore = hit.score
     fused.set(hit.uid, entry)
@@ -58,15 +60,17 @@ export function hybridSearch(
       .sort((left, right) => left.distance - right.distance)
       .slice(0, Math.max(topK * 4, 20))
     ranked.forEach((hit, position) => {
-      const entry = fused.get(hit.uid) ?? { score: 0, vectorDistance: 1, lexicalScore: 0 }
+      const entry = fused.get(hit.uid) ?? { score: 0, vectorDistance: 1, lexicalScore: 0, vector: false }
       entry.score += 1 / (RRF_K + position + 1)
       entry.vectorDistance = hit.distance
+      entry.vector = true
       fused.set(hit.uid, entry)
     })
   }
 
+  // Tie-break by uid so equal-fused hits keep a stable order across calls (matches harness).
   return [...fused.entries()]
-    .sort((left, right) => right[1].score - left[1].score)
+    .sort((left, right) => right[1].score - left[1].score || left[0].localeCompare(right[0]))
     .slice(0, topK)
     .map(([uid, entry]) => {
       const chunk = index.chunks.get(uid)
@@ -77,6 +81,7 @@ export function hybridSearch(
         vectorDistance: entry.vectorDistance,
         lexicalScore: entry.lexicalScore,
         score: entry.score,
+        cosine: entry.vector ? 1 - entry.vectorDistance : null,
       }
     })
     .filter(hit => hit.content !== '')
