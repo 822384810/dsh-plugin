@@ -23,10 +23,10 @@ export interface AmbientOptions {
 /** Retrieval hook, supplied by the service that owns the library. */
 export type AmbientRetrieve = (query: string, topK: number) => SearchHit[]
 
-/** Default tuning. */
+/** Default tuning: five candidates, each capped at 2000 chars, but only ~2 fit the budget. */
 const DEFAULTS: AmbientOptions = {
   topK: 5,
-  maxChars: 2000,
+  maxChars: 4000,
   minScore: 0,
   cacheTtlMs: 3000,
 }
@@ -70,8 +70,13 @@ export class AmbientRecall {
     const hits = this.retrieve(trimmed, this.options.topK).filter(hit => hit.score > this.options.minScore)
     let text = ''
     for (const hit of hits) {
-      const block = `[知识库片段] 来源：${hit.sourcePath}\n${excerpt(hit.content, 400)}`
-      if (text.length + block.length > this.options.maxChars) break
+      const remaining = this.options.maxChars - text.length - (text === '' ? 0 : 2)
+      if (remaining <= 0) break
+      // Each hit keeps up to 2000 characters (the harness knowledge channel's per-node cap);
+      // the last one is trimmed to the remaining budget instead of being dropped wholesale.
+      let block = `[知识库片段] 来源：${hit.sourcePath}\n${excerpt(hit.content, 2000)}`
+      if (block.length > remaining) block = block.slice(0, remaining).trimEnd()
+      if (block === '') break
       text += text === '' ? block : `\n\n${block}`
     }
     this.lastKey = key

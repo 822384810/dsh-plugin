@@ -5,7 +5,9 @@
  * an actionable message rather than the whole ingest run, so a library still builds from the
  * formats the host can actually read.
  */
-import { access, readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { access, readFile, readdir } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { decodeBuffer } from '../shared/encoding.ts'
@@ -137,9 +139,17 @@ async function parsePdf(absPath: string, ocr: OcrOptions, log?: Logger): Promise
   )
   if (pdfjs === null) throw new Error('reading .pdf needs the optional "pdfjs-dist" package')
   const buffer = await readFile(absPath)
+  const assets = pdfjsAssetUrls()
+  log?.debug(`[pdf] pdf.js assets: wasmUrl=${assets.wasmUrl ?? '(none)'} cMapUrl=${assets.cMapUrl ?? '(none)'}`)
   // verbosity 0 = errors only; keeps noisy font warnings (e.g. Type 1 charstring)
   // out of the host log while real failures still surface.
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, verbosity: 0 })
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+    isEvalSupported: false,
+    verbosity: 0,
+    useSystemFonts: true,
+    ...assets,
+  })
   const doc = await loadingTask.promise
   try {
     const pages: string[] = []
@@ -158,10 +168,15 @@ async function parsePdf(absPath: string, ocr: OcrOptions, log?: Logger): Promise
     // Private-Use-Area code points / replacement characters instead of real glyphs.
     // Such garbage must be rasterized and OCR'd rather than indexed as-is.
     const scanned = pageCount > 0 && textless / pageCount > 0.5
-    if (scanned || (pageCount > 0 && looksGarbled(combined))) {
-      const result = await ocrPdf(doc, ocr, log, buffer)
+    const garbled = looksGarbled(combined)
+    log?.debug(`[pdf] text layer: pages=${pageCount} length=${combined.length} scanned=${scanned} garbled=${garbled}`)
+    if (scanned || garbled) {
+      log?.debug(`[pdf] entering OCR (scanned=${scanned}, garbled=${garbled}), engine=${ocr.engine}`)
+      const result = await ocrPdf(doc, ocr, log)
+      log?.debug(`[pdf] OCR finished via ${result.parser}, length=${result.pages.join('').length}`)
       return { text: normalizeText(assemblePages(result.pages)), parser: result.parser, pages: pageCount }
     }
+    log?.debug('[pdf] using the text layer directly (parser=pdf)')
     return { text: normalizeText(combined), parser: 'pdf', pages: pageCount }
   } finally {
     await loadingTask.destroy()
@@ -552,6 +567,7 @@ function looksGarbled(text: string): boolean {
   let alpha = 0
   let digit = 0
   let symbol = 0
+  let fwBad = 0
   for (const ch of text) {
     const code = ch.codePointAt(0) ?? 0
     total++
@@ -560,6 +576,22 @@ function looksGarbled(text: string): boolean {
     if (code >= 0xE000 && code <= 0xF8FF) { pua++; continue }
     if (code === 0xFFFD) { pua++; continue }
     if (code === 0x20 || code === 0x09 || code === 0x0A || code === 0x0D) { meaningful++; continue }
+    // Fullwidth ASCII variants (U+FF01..U+FF5E): a broken ToUnicode map often maps
+    // Latin letters and digits to their fullwidth code points (e.g. 犌犅／犜３５２９５ was
+    // GB/T 35295). Those wrong glyphs land inside the CJK ranges, so the density
+    // checks below cannot see them. Fullwidth CJK punctuation is normal typesetting.
+    if (code >= 0xFF01 && code <= 0xFF5E) {
+      if (
+        (code >= 0xFF10 && code <= 0xFF19)
+        || (code >= 0xFF21 && code <= 0xFF3A)
+        || (code >= 0xFF41 && code <= 0xFF5A)
+      ) {
+        fwBad++
+      } else {
+        meaningful++
+      }
+      continue
+    }
     // CJK ideographs, CJK punctuation and general punctuation.
     if (
       (code >= 0x3000 && code <= 0x303F) ||
@@ -590,7 +622,10 @@ function looksGarbled(text: string): boolean {
   const symbolRatio = symbol / Math.max(wordlike + symbol, 1)
   const cjkDensity = cjk / total
   const wrongEncoding = total >= 300 && cjkDensity < 0.05 && symbolRatio > 0.35
-  return pua / total > 0.05 || meaningful / total < 0.5 || wrongEncoding
+  // More than 1% fullwidth Latin letters/digits in a long extract is a broken ToUnicode
+  // map, even though those code points look like ordinary CJK ideographs.
+  const hasFullwidthLatinOrDigits = total >= 300 && fwBad / total > 0.01
+  return pua / total > 0.05 || meaningful / total < 0.5 || wrongEncoding || hasFullwidthLatinOrDigits
 }
 
 /** Rasterization scale for OCR; 2× keeps small CJK glyphs legible to Tesseract. */
@@ -630,11 +665,6 @@ interface PageGrid {
 interface TableFrame {
   readonly rows: readonly number[]
   readonly columns: readonly number[]
-}
-
-/** One rasterized page: the pixels handed to the recognizer and the surface they came from. */
-interface PageShot {
-  readonly surface: import('@napi-rs/canvas').Canvas
 }
 
 /** Cached PP-OCR engine, keyed by the directory it loaded from: sessions are per-process. */
@@ -716,7 +746,6 @@ async function ocrPdf(
   doc: import('pdfjs-dist/legacy/build/pdf.mjs').PdfDocument,
   ocr: OcrOptions,
   log?: Logger,
-  bytes?: Uint8Array,
 ): Promise<{ pages: string[]; parser: string }> {
   const modelDir = await resolvePpModelDir(ocr.modelDir)
   const wantPpocr = ocr.engine === 'ppocr'
@@ -727,7 +756,9 @@ async function ocrPdf(
     if (engine !== null) {
       try {
         log?.debug(`[ocr] using PP-OCR (pdf-ppocr), modelDir=${modelDir}`)
-        return { pages: await ocrPdfPpocr(doc, engine, ocr.renderScale, log, bytes), parser: 'pdf-ppocr' }
+        const pages = await ocrPdfPpocr(doc, engine, ocr.renderScale, log)
+        log?.debug(`[ocr] PP-OCR finished, text length=${pages.join('').length}`)
+        return { pages, parser: 'pdf-ppocr' }
       } catch (error) {
         // An explicit 'ppocr' request must surface its failure; 'auto' degrades to Tesseract.
         if (ocr.engine === 'ppocr') throw error
@@ -741,7 +772,9 @@ async function ocrPdf(
     log?.debug('[ocr] PP-OCR unavailable, falling back to Tesseract')
   }
   log?.debug(`[ocr] using Tesseract (pdf-ocr), languages=${ocr.languages}`)
-  return { pages: await ocrPdfTesseract(doc, ocr.languages, ocr.langPath, log, bytes), parser: 'pdf-ocr' }
+  const pages = await ocrPdfTesseract(doc, ocr.languages, ocr.langPath, log)
+  log?.debug(`[ocr] Tesseract finished, text length=${pages.join('').length}`)
+  return { pages, parser: 'pdf-ocr' }
 }
 
 /**
@@ -755,7 +788,6 @@ async function ocrPdfTesseract(
   languages: string,
   ocrLangPath: string,
   log?: Logger,
-  bytes?: Uint8Array,
 ): Promise<string[]> {
   const canvas = await loadCanvas()
   const tesseract = await importOptional<typeof import('tesseract.js')>('tesseract.js')
@@ -765,27 +797,25 @@ async function ocrPdfTesseract(
       + `"tesseract.js" packages with "${languages}" language data`,
     )
   }
-  const fallback = bytes === undefined ? undefined : new MupdfFallback(bytes, log)
   let worker: import('tesseract.js').TesseractWorker | null = null
   try {
     worker = await tesseract.createWorker(languages, undefined, await tessdataOptions(ocrLangPath))
     const pages: string[] = []
     for (let index = 1; index <= doc.numPages; index++) {
       const page = await doc.getPage(index)
-      const first = await rasterize(canvas, page, OCR_RENDER_SCALE, log, fallback)
-      const probe = tableFrames(eraseRules(first.surface))
+      const first = await rasterize(canvas, page, OCR_RENDER_SCALE, log)
+      const probe = tableFrames(eraseRules(first))
       // A page drawn with a table is read again at a higher scale: erasing the rules is what recovers
       // the cells, but the small print inside them needs the extra pixels to survive the second pass.
-      const shot = probe.length === 0 ? first : await rasterize(canvas, page, OCR_TABLE_RENDER_SCALE, log, fallback)
-      const frames = probe.length === 0 ? [] : tableFrames(eraseRules(shot.surface))
+      const shot = probe.length === 0 ? first : await rasterize(canvas, page, OCR_TABLE_RENDER_SCALE, log)
+      const frames = probe.length === 0 ? [] : tableFrames(eraseRules(shot))
       // The image is encoded here, once the rules are gone; encoding it when the page was drawn would
       // hand the recognizer the grid again and lose exactly what the erasure bought.
-      const { data } = await worker.recognize(shot.surface.toBuffer('image/png'), {}, { text: true, blocks: true })
+      const { data } = await worker.recognize(shot.toBuffer('image/png'), {}, { text: true, blocks: true })
       pages.push(ocrPageMarkdown(data, frames))
     }
     return pages
   } finally {
-    fallback?.destroy()
     if (worker !== null) await worker.terminate()
   }
 }
@@ -804,22 +834,16 @@ async function ocrPdfPpocr(
   engine: PpOcrEngine,
   scale: number,
   log?: Logger,
-  bytes?: Uint8Array,
 ): Promise<string[]> {
   const canvas = await loadCanvas()
   if (canvas === null) throw new Error('PP-OCR needs the optional "@napi-rs/canvas" package')
-  const fallback = bytes === undefined ? undefined : new MupdfFallback(bytes, log)
   const pages: string[] = []
-  try {
-    for (let index = 1; index <= doc.numPages; index++) {
-      const page = await doc.getPage(index)
-      const shot = await rasterize(canvas, page, scale, log, fallback)
-      const frames = tableFrames(eraseRules(shot.surface))
-      const data = await recognizePpPage(engine, shot.surface)
-      pages.push(ocrPageMarkdown(data, frames))
-    }
-  } finally {
-    fallback?.destroy()
+  for (let index = 1; index <= doc.numPages; index++) {
+    const page = await doc.getPage(index)
+    const shot = await rasterize(canvas, page, scale, log)
+    const frames = tableFrames(eraseRules(shot))
+    const data = await recognizePpPage(engine, shot)
+    pages.push(ocrPageMarkdown(data, frames))
   }
   return pages
 }
@@ -868,124 +892,32 @@ async function recognizePpPage(
   return { text: lines.map(line => line.text).join('\n'), blocks }
 }
 
-/** The slice of `mupdf` used to rasterize a page that pdf.js could not paint. */
-interface MupdfModule {
-  PDFDocument: { openDocument(data: Uint8Array): MupdfDoc }
-  Matrix: { scale(sx: number, sy: number): unknown }
-  ColorSpace: { DeviceRGB: unknown }
-  setLog(log: { warning?(message: string): void; error?(message: string): void }): void
-}
-interface MupdfDoc {
-  loadPage(index: number): MupdfPage
-  destroy?(): void
-}
-interface MupdfPixmap {
-  getWidth(): number
-  getHeight(): number
-  getNumberOfComponents(): number
-  getStride(): number
-  getPixels(): Uint8ClampedArray
-}
-interface MupdfPage {
-  toPixmap(ctm: unknown, colorspace: unknown, alpha: boolean): MupdfPixmap
-}
-
 /**
- * MuPDF fallback renderer — one per PDF, reused across its pages.
+ * Whether pdf.js painted no ink at all.
  *
- * pdf.js's canvas backend paints some scanned PDFs blank (JBIG2, JPEG2000, certain colorspaces);
- * MuPDF renders those same pages correctly. The document is opened once and reused: re-opening per
- * page would re-parse and re-repair a broken xref every time, spamming repair warnings and wasting
- * work. MuPDF's own warnings/errors are routed to the plugin logger instead of the host console.
+ * A near-white average is too strict for a sparse page (one line of text on a large sheet
+ * barely moves the mean), so count dark pixels and require a non-trivial share of ink.
  */
-class MupdfFallback {
-  private doc: MupdfDoc | null = null
-  private opened = false
-  constructor(private readonly bytes: Uint8Array, private readonly log?: Logger) {}
-
-  /**
-   * Render one page by zero-based index.
-   * @returns The page's raw RGBA pixels and dimensions, or null when MuPDF is unavailable or fails.
-   */
-  async render(pageIndex: number, scale: number): Promise<{ rgba: Uint8ClampedArray; width: number; height: number } | null> {
-    const mod = await importOptional<MupdfModule>('mupdf')
-    if (mod === null) return null
-    if (!this.opened) {
-      this.opened = true
-      // MuPDF prints "repairing PDF document" etc. straight to the console by default; route them to
-      // our logger at debug (benign auto-repair) / warn (real error) instead. Best-effort: if setLog
-      // is absent in a build, MuPDF just keeps printing to the console.
-      try {
-        mod.setLog({
-          warning: (message) => { this.log?.debug(`[pdf] MuPDF: ${message}`) },
-          error: (message) => { this.log?.warn(`[pdf] MuPDF: ${message}`) },
-        })
-      } catch { /* no log hook in this build */ }
-      try {
-        this.doc = mod.PDFDocument.openDocument(this.bytes)
-      } catch (error) {
-        this.log?.warn(`[pdf] MuPDF could not open document: ${error instanceof Error ? error.message : String(error)}`)
-        this.doc = null
-      }
-    }
-    const doc = this.doc
-    if (doc === null) return null
-    try {
-      const page = doc.loadPage(pageIndex)
-      // alpha=true yields 4-channel RGBA; rebuild a tightly-packed buffer regardless of MuPDF's stride.
-      const pixmap = page.toPixmap(mod.Matrix.scale(scale, scale), mod.ColorSpace.DeviceRGB, true)
-      const width = pixmap.getWidth()
-      const height = pixmap.getHeight()
-      const components = pixmap.getNumberOfComponents()
-      const stride = pixmap.getStride()
-      const pixels = pixmap.getPixels()
-      const rgba = new Uint8ClampedArray(width * height * 4)
-      for (let y = 0; y < height; y++) {
-        const src = y * stride
-        const dst = y * width * 4
-        if (components === 4) {
-          rgba.set(pixels.subarray(src, src + width * 4), dst)
-        } else {
-          for (let x = 0; x < width; x++) {
-            const s = src + x * components
-            const d = dst + x * 4
-            rgba[d] = pixels[s] ?? 0
-            rgba[d + 1] = pixels[s + 1] ?? 0
-            rgba[d + 2] = pixels[s + 2] ?? 0
-            rgba[d + 3] = 255
-          }
-        }
-      }
-      return { rgba, width, height }
-    } catch (error) {
-      this.log?.warn(`[pdf] MuPDF fallback failed for page ${String(pageIndex + 1)}: ${error instanceof Error ? error.message : String(error)}`)
-      return null
-    }
-  }
-
-  /** Release the MuPDF document. */
-  destroy(): void {
-    try { this.doc?.destroy?.() } catch { /* best effort */ }
-    this.doc = null
-  }
-}
-
-/** Whether a rendered surface is effectively blank (near-white), i.e. pdf.js painted nothing. */
 function isBlankSurface(surface: import('@napi-rs/canvas').Canvas): boolean {
   const { data } = surface.getContext('2d').getImageData(0, 0, surface.width, surface.height)
-  let luma = 0
   const px = data.length / 4
-  for (let i = 0; i < data.length; i += 4) luma += ((data[i] ?? 255) + (data[i + 1] ?? 255) + (data[i + 2] ?? 255)) / 3
-  return px > 0 && luma / px > 250
+  if (px === 0) return false
+  let ink = 0
+  for (let i = 0; i < data.length; i += 4) {
+    if (((data[i] ?? 255) + (data[i + 1] ?? 255) + (data[i + 2] ?? 255)) / 3 < 200) ink++
+  }
+  return ink / px < 0.0005
 }
 
 /**
  * Rasterize one page.
+ *
+ * A blank surface is only reported: pdf.js needs its WASM/CMAP assets (see `pdfjsAssetUrls`) to
+ * paint JBIG2/JPEG2000 pages in the first place, so there is no second renderer to fall back to.
  * @param canvas - The canvas backend.
  * @param page - The pdf.js page.
  * @param scale - Rasterization scale.
- * @param log - Optional logger; surfaces a blank render and the fallback behind it.
- * @param fallback - MuPDF fallback used to re-render a page pdf.js painted blank; one per PDF.
+ * @param log - Optional logger.
  * @returns The rendered page.
  */
 async function rasterize(
@@ -993,30 +925,14 @@ async function rasterize(
   page: import('pdfjs-dist/legacy/build/pdf.mjs').PdfPage,
   scale: number,
   log?: Logger,
-  fallback?: MupdfFallback,
-): Promise<PageShot> {
+): Promise<import('@napi-rs/canvas').Canvas> {
   const viewport = page.getViewport({ scale })
   const surface = canvas.createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height))
   await page.render({ canvasContext: surface.getContext('2d'), viewport }).promise
-  // A blank page means pdf.js painted nothing (an image codec/colorspace it cannot decode); OCR
-  // would read white. Re-render the same page through MuPDF, which handles those, when available.
-  if (isBlankSurface(surface) && fallback !== undefined) {
-    // pdf.js's own `pageNumber` (1-based) is present at runtime; it is just absent from the types.
-    const pageIndex = (page as unknown as { pageNumber: number }).pageNumber - 1
-    const shot = await fallback.render(pageIndex, scale)
-    if (shot !== null) {
-      const rendered = canvas.createCanvas(shot.width, shot.height)
-      const ctx = rendered.getContext('2d')
-      const image = ctx.getImageData(0, 0, shot.width, shot.height)
-      image.data.set(shot.rgba)
-      ctx.putImageData(image, 0, 0)
-      return { surface: rendered }
-    }
-  }
   if (isBlankSurface(surface)) {
-    log?.warn('[pdf] rasterized page is blank (meanLuma>250); pdf.js could not paint its content and no fallback produced pixels')
+    log?.warn('[pdf] rasterized page is blank; pdf.js could not paint its content')
   }
-  return { surface }
+  return surface
 }
 
 /**
@@ -1497,6 +1413,41 @@ function ocrPageMarkdown(page: OcrPage, frames: readonly TableFrame[]): string {
 }
 
 /**
+ * Static asset directories pdf.js v6 needs in Node.
+ *
+ * v6 moved the JBIG2/OpenJPEG decoders to WASM: without `wasmUrl`, a scanned PDF whose images
+ * use those codecs renders blank and OCR reads a white page. Paths must end with `/`
+ * (pdf.js validates them in `getFactoryUrlProp`).
+ */
+function pdfjsAssetUrls(): { wasmUrl?: string; cMapUrl?: string; standardFontDataUrl?: string } {
+  let entry: string
+  try {
+    entry = createRequire(import.meta.url).resolve('pdfjs-dist/legacy/build/pdf.mjs')
+  } catch {
+    return {}
+  }
+  const find = (name: string): string => {
+    let current = path.dirname(entry)
+    for (let depth = 0; depth < 8; depth++) {
+      const candidate = path.join(current, name)
+      if (existsSync(candidate)) return `${candidate.replace(/\\/g, '/')}/`
+      const parent = path.dirname(current)
+      if (parent === current) break
+      current = parent
+    }
+    return ''
+  }
+  const urls: { wasmUrl?: string; cMapUrl?: string; standardFontDataUrl?: string } = {}
+  const wasm = find('wasm')
+  if (wasm !== '') urls.wasmUrl = wasm
+  const cmaps = find('cmaps')
+  if (cmaps !== '') urls.cMapUrl = cmaps
+  const fonts = find('standard_fonts')
+  if (fonts !== '') urls.standardFontDataUrl = fonts
+  return urls
+}
+
+/**
  * Load a canvas backend for PDF rasterization.
  *
  * `@napi-rs/canvas` is not a direct dependency, but pdf.js declares it as an optional
@@ -1508,7 +1459,6 @@ async function loadCanvas(): Promise<typeof import('@napi-rs/canvas') | null> {
   const direct = await importOptional<typeof import('@napi-rs/canvas')>('@napi-rs/canvas')
   if (direct !== null) return direct
   try {
-    const { createRequire } = await import('node:module')
     const anchor = createRequire(import.meta.url).resolve('pdfjs-dist/legacy/build/pdf.mjs')
     return createRequire(anchor)('@napi-rs/canvas') as typeof import('@napi-rs/canvas')
   } catch {
@@ -1517,21 +1467,41 @@ async function loadCanvas(): Promise<typeof import('@napi-rs/canvas') | null> {
 }
 
 /**
+ * Where the Tesseract language data lives: an explicit `ocrLangPath` (a directory or URL),
+ * `WIKI_OCR_LANG_PATH`, then the `<lang>.traineddata.gz` files shipped in the package's
+ * `tessdata/` directory so OCR works offline. Nothing resolves → Tesseract's own CDN.
+ */
+async function resolveTessdataDir(override: string): Promise<string> {
+  if (override !== '') return override
+  const fromEnv = process.env.WIKI_OCR_LANG_PATH ?? ''
+  if (fromEnv !== '') return fromEnv
+  return await bundledDir('tessdata')
+}
+
+/**
  * Tesseract options for locating the language data.
  *
- * Precedence: an explicit `ocrLangPath` setting (a directory or URL), then the
- * `<lang>.traineddata.gz` files shipped in the package's `tessdata/` directory (so
- * OCR works offline), then nothing — letting Tesseract fall back to its default CDN.
- * `cacheMethod: 'none'` skips Tesseract's on-disk cache: the data is already local,
- * and caching would only copy it into the working directory.
+ * `cacheMethod: 'none'` skips Tesseract's on-disk cache: the data is already local.
+ * tesseract.js defaults to `<lang>.traineddata.gz`, so a directory holding only unpacked
+ * `<lang>.traineddata` must turn gzip off — probe the directory instead of assuming.
  * @param override - `ocrLangPath` setting, empty when unset.
  * @returns Options for `createWorker`, empty when nothing is configured.
  */
 async function tessdataOptions(override: string): Promise<Record<string, unknown>> {
-  if (override !== '') return { langPath: override, cacheMethod: 'none' }
-  const dir = await bundledDir('tessdata')
+  const dir = await resolveTessdataDir(override)
   if (dir === '') return {}
-  return { langPath: dir, cacheMethod: 'none' }
+  let entries: string[]
+  try {
+    entries = await readdir(dir)
+  } catch {
+    // A configured value may be a URL or unreadable; hand it to tesseract.js so the
+    // failure surfaces in the OCR log instead of silently switching to the CDN.
+    return { langPath: dir, cacheMethod: 'none' }
+  }
+  const hasRaw = entries.some(name => name.endsWith('.traineddata'))
+  const hasGz = entries.some(name => name.endsWith('.traineddata.gz'))
+  const gzip = !(hasRaw && !hasGz)
+  return { langPath: dir, cacheMethod: 'none', gzip }
 }
 
 /**

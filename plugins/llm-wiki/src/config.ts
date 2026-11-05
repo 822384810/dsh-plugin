@@ -41,8 +41,9 @@ export interface Config {
   /** Tesseract languages used for scanned PDFs (fallback engine). */
   readonly ocrLanguages?: string
   /**
-   * Directory (or URL) holding Tesseract `<lang>.traineddata.gz` files.
-   * Empty means the data bundled in the plugin's `tessdata/` directory.
+   * Directory (or URL) holding Tesseract language data, either `<lang>.traineddata.gz` or
+   * unpacked `<lang>.traineddata`. Empty checks `WIKI_OCR_LANG_PATH`, then the bundled
+   * `tessdata/` directory; gzip is detected from the directory contents.
    */
   readonly ocrLangPath?: string
   /**
@@ -72,7 +73,7 @@ export interface Config {
   readonly extraSourceExtensions?: readonly string[]
   /** Hits injected into the system prompt by ambient recall. */
   readonly ambientTopK?: number
-  /** Character budget for the ambient-recall block. */
+  /** Character budget for the ambient-recall block (default 4000 = 2 full hits × 2000 chars). */
   readonly ambientMaxChars?: number
   /** Provider route used for the optional LLM-assisted Wiki compile. */
   readonly compileProvider?: string
@@ -80,12 +81,23 @@ export interface Config {
   readonly compileModel?: string
   /** Characters of source text handed to the model per compile call. */
   readonly compileWindowChars?: number
-  /** Upper bound on compile windows per source; the remainder is skipped with a warning. */
+  /** Upper bound on compile windows per source; large files enlarge windows to stay within it. */
   readonly compileMaxWindows?: number
-  /** Output-token ceiling for one window's page plan. */
+  /** Starting output budget for one window's plan; values below `MIN_COMPILE_TOKENS` are raised. */
   readonly compileMaxTokens?: number
+  /** Ceiling reached when a truncated answer doubles its output budget (default 32768). */
+  readonly compileMaxOutputTokens?: number
+  /** Model context window in tokens; the compiler reserves room for prompt + output (default 128000). */
+  readonly compileContextTokens?: number
+  /** Characters per token used to size windows against the context window (default 1, CJK-safe). */
+  readonly compileCharsPerToken?: number
   /** Upload size ceiling in bytes. */
   readonly maxUploadBytes?: number
+  /**
+   * Shortlist vectors with a cheap sketch before exact cosine on large libraries (default true).
+   * Set false to scan every vector exactly — slower, but with no approximation at all.
+   */
+  readonly vectorApprox?: boolean
 }
 
 /** Settings with every default applied. */
@@ -112,7 +124,11 @@ export interface Settings {
   readonly compileWindowChars: number
   readonly compileMaxWindows: number
   readonly compileMaxTokens: number
+  readonly compileMaxOutputTokens: number
+  readonly compileContextTokens: number
+  readonly compileCharsPerToken: number
   readonly maxUploadBytes: number
+  readonly vectorApprox: boolean
 }
 
 /** Default registry location: `$DSH_HOME/storages/llm-wiki/registry.json`. */
@@ -129,6 +145,25 @@ export const DEFAULT_REGISTRY_PATH = dshHomePath('storages', 'llm-wiki', 'regist
  * still runs.
  */
 export const DEFAULT_EMBED_MODEL_PATH = fileURLToPath(new URL('../models/embed/model.onnx', import.meta.url))
+
+/**
+ * Lower bound for one window's output budget: 8192 was measured to cut page JSON mid-structure,
+ * so a smaller configured value — including one left over from an older patch — is raised.
+ */
+export const MIN_COMPILE_TOKENS = 16384
+
+/** Default ceiling for a truncated answer doubling its output budget; override per model. */
+export const DEFAULT_COMPILE_MAX_OUTPUT_TOKENS = 32768
+
+/**
+ * Default model context window in tokens. The compiler reserves the output ceiling plus a fixed
+ * prompt overhead out of this, leaving far more than the 20200-character window cap by default —
+ * so enabling the check does not shrink the ~4M-character coverage on a 128k model.
+ */
+export const DEFAULT_COMPILE_CONTEXT_TOKENS = 128000
+
+/** Conservative characters-per-token ratio: one CJK character costs about one token. */
+export const DEFAULT_COMPILE_CHARS_PER_TOKEN = 1
 
 /** Guard against a nonsense overlap swallowing the whole chunk stride. */
 function sanitizeChunking(chunkSize: number | undefined, chunkOverlap: number | undefined): [number, number] {
@@ -172,12 +207,32 @@ function normalizeExtensions(list: readonly string[] | undefined): readonly stri
  */
 export function resolveSettings(config: Config = {}): Settings {
   const [chunkSize, chunkOverlap] = sanitizeChunking(config.chunkSize, config.chunkOverlap)
+  // A model cannot spend its whole context on output. Cap the ceiling at half the context window,
+  // leaving the other half (minus the compiler's prompt overhead) for the source text. A patch
+  // written for a large model therefore cannot push a small-context model into an overflowing call.
+  const compileContextTokens = Math.max(
+    positive(config.compileContextTokens, DEFAULT_COMPILE_CONTEXT_TOKENS),
+    MIN_COMPILE_TOKENS * 2,
+  )
+  const contextOutputCap = Math.max(Math.floor(compileContextTokens / 2), MIN_COMPILE_TOKENS)
+  const compileMaxOutputTokens = Math.max(
+    Math.min(positive(config.compileMaxOutputTokens, DEFAULT_COMPILE_MAX_OUTPUT_TOKENS), contextOutputCap),
+    MIN_COMPILE_TOKENS,
+  )
+  const compileMaxTokens = Math.min(
+    Math.max(positive(config.compileMaxTokens, MIN_COMPILE_TOKENS), MIN_COMPILE_TOKENS),
+    compileMaxOutputTokens,
+  )
+  const compileCharsPerToken = Number.isFinite(config.compileCharsPerToken)
+    && (config.compileCharsPerToken as number) > 0
+    ? Math.min(config.compileCharsPerToken as number, 16)
+    : DEFAULT_COMPILE_CHARS_PER_TOKEN
   return {
     libraries: Array.isArray(config.libraries) ? config.libraries : [],
     registryPath: text(config.registryPath, DEFAULT_REGISTRY_PATH),
     chunkSize,
     chunkOverlap,
-    topK: positive(config.topK, 10),
+    topK: positive(config.topK, 5),
     watch: config.watch ?? true,
     embeddingModelPath: text(config.embeddingModelPath, DEFAULT_EMBED_MODEL_PATH),
     embeddingVocabPath: text(config.embeddingVocabPath, ''),
@@ -191,12 +246,16 @@ export function resolveSettings(config: Config = {}): Settings {
       : 3,
     extraSourceExtensions: normalizeExtensions(config.extraSourceExtensions),
     ambientTopK: positive(config.ambientTopK, 5),
-    ambientMaxChars: positive(config.ambientMaxChars, 2000),
+    ambientMaxChars: positive(config.ambientMaxChars, 4000),
     compileProvider: text(config.compileProvider, ''),
     compileModel: text(config.compileModel, ''),
-    compileWindowChars: positive(config.compileWindowChars, 20000),
+    compileWindowChars: positive(config.compileWindowChars, 2000),
     compileMaxWindows: positive(config.compileMaxWindows, 200),
-    compileMaxTokens: positive(config.compileMaxTokens, 8000),
+    compileMaxTokens,
+    compileMaxOutputTokens,
+    compileContextTokens,
+    compileCharsPerToken,
     maxUploadBytes: positive(config.maxUploadBytes, 100 * 1024 * 1024),
+    vectorApprox: config.vectorApprox ?? true,
   }
 }

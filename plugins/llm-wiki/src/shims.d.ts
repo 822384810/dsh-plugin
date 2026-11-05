@@ -142,6 +142,10 @@ declare module 'pdfjs-dist/legacy/build/pdf.mjs' {
     data: Uint8Array
     isEvalSupported?: boolean
     verbosity?: number
+    useSystemFonts?: boolean
+    wasmUrl?: string
+    cMapUrl?: string
+    standardFontDataUrl?: string
   }): PdfLoadingTask
 }
 

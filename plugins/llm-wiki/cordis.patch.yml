@@ -11,12 +11,15 @@
       config:
         chunkSize: 800
         chunkOverlap: 100
-        topK: 10
+        topK: 5
         watch: true
         ambientTopK: 5
-        ambientMaxChars: 2000
+        # 每轮注入保持轻量：5 条候选、每条最多 2000 字符，预算约 2 片完整 + 末条裁剪。
+        # 需要每轮给足 5 片时改成 10000。
+        ambientMaxChars: 4000
         maxUploadBytes: 52428800
-        # 扫描版 PDF 的 OCR：语言留空则用插件自带 tessdata/（内置 chi_sim、eng，可离线）。
+        # 扫描版 PDF 的 OCR：语言库留空依次查 WIKI_OCR_LANG_PATH 与插件自带 tessdata/
+        # （内置 chi_sim、eng 的 4.0.0 完整档，可离线；.traineddata.gz 与解压的 .traineddata 都支持）。
         # 需要其它语言或自定义数据时，指定目录或 URL：
         # ocrLanguages: chi_sim+eng
         # ocrLangPath: D:/tessdata
@@ -25,10 +28,21 @@
         # 需要 LLM 参与 Wiki 编译时再打开（留空则跟随每个知识库在面板里选的模型 / DSH 默认模型）：
         # compileProvider: deepseek
         # compileModel: deepseek-chat
-        # 编译分窗：每次送入模型的字数，以及单个来源最多编译多少窗（超出部分跳过并在日志告警）。
-        # compileWindowChars: 20000
+        # 编译分窗：常规每窗 2000 字；大文件自动放大每窗（最多约 2 万字），
+        # 让最多 200 窗读完全文，总覆盖约 400 万字，不再 60 窗就丢掉后半截。
+        # 单窗上限还会被 compileContextTokens 反推的上下文预算压低（小模型可加大窗口数补覆盖）。
+        # 输出预算常规起步 16384（低于此值会抬回），截断时自动翻倍、上限 32768；
+        # 大文件放大后的窗口直接以上限起步。在上限处仍截断会拆成两个子窗重新规划，
+        # 不再用同一预算无效重试；发送前也会按实际 prompt 复核上下文是否放得下。
+        # compileWindowChars: 2000
         # compileMaxWindows: 200
-        # compileMaxTokens: 8000
+        # compileMaxTokens: 16384
+        # compileMaxOutputTokens: 32768   # 按模型输出上限调，不低于 16384
+        # compileContextTokens: 128000   # 模型上下文窗口，32k 模型改成 32768
+        # compileCharsPerToken: 1        # 中文保守值；纯英文可设 3~4
+        # 大库检索：草图短名单加速（置 false 则全量精确扫描）；相同查询向量缓存 30 秒，
+        # 编译每 8 窗做一次语义检索、其余走字面检索，省掉大量 embedding 推理。
+        # vectorApprox: true
 
 # 开发期只调 Host 半区时，也可以改用 --patch 覆盖层直接指向源码构建产物（绝对路径）
 # —— 注意此时客户端半区不可用（file URL 没有包名，扫描不到 dsh.client）：

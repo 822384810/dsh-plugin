@@ -32,9 +32,10 @@
   "scripts": {
     "build": "node ../../packages/plugin-kit/build-plugin.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "fetch-models": "node scripts/fetch-models.mjs && node scripts/fetch-embed-model.mjs",
+    "fetch-models": "node scripts/fetch-models.mjs && node scripts/fetch-embed-model.mjs && node scripts/fetch-tessdata.mjs",
     "fetch-embed-model": "node scripts/fetch-embed-model.mjs",
-    "prepack": "node scripts/fetch-models.mjs && node scripts/fetch-embed-model.mjs && node ../../packages/plugin-kit/prepack.mjs",
+    "fetch-tessdata": "node scripts/fetch-tessdata.mjs",
+    "prepack": "node scripts/fetch-models.mjs && node scripts/fetch-embed-model.mjs && node scripts/fetch-tessdata.mjs && node ../../packages/plugin-kit/prepack.mjs",
     "postpack": "node ../../packages/plugin-kit/postpack.mjs"
   },
   "peerDependencies": {
@@ -57,7 +58,6 @@
     "iconv-lite": "^0.6.3",
     "jschardet-ultra": "^2.1.0",
     "mammoth": "^1.8.0",
-    "mupdf": "^1.24.0",
     "onnxruntime-node": "^1.30.0",
     "pdfjs-dist": "^6.3.0",
     "tesseract.js": "^5.1.0"

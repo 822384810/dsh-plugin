@@ -9,13 +9,71 @@
  * with, and the compiler falls back to its deterministic page rather than failing.
  */
 import { randomUUID } from 'node:crypto'
+import { now } from '@dsh-plugins-xz/time-utils'
+import type { Logger } from '@dsh-plugins-xz/log-utils'
 import type { AgentDefaultModelService, LlmFinishReason, LlmMessage, LlmProviderInfo, LlmService } from '../types.ts'
 import type { ModelCatalog, ModelFailure, ModelGroup, ModelRef } from '../shared/models.ts'
+
+/** Measurements of one `llm.stream` call, for diagnosing slow or truncated compiles. */
+export interface LlmCallDiagnostics {
+  readonly provider: string
+  readonly model: string
+  readonly maxTokens: number
+  readonly promptChars: number
+  readonly elapsedMs: number
+  /** Time to the first text delta; null when the stream produced no text at all. */
+  readonly firstDeltaMs: number | null
+  readonly outputChars: number
+  /** Every chunk type observed, with counts — reasoning deltas show up here. */
+  readonly chunkTypes: string
+  readonly finishKind: string
+  readonly failureCode: string
+  readonly outcome: 'ok' | 'error' | 'throw'
+  readonly message: string
+}
+
+/** A failed completion carrying the measurements of the stream that produced it. */
+export class LlmCallError extends Error {
+  readonly diagnostics: LlmCallDiagnostics
+
+  constructor(message: string, diagnostics: LlmCallDiagnostics) {
+    super(message)
+    this.name = 'LlmCallError'
+    this.diagnostics = diagnostics
+  }
+}
+
+/** Flatten a message so one diagnostic always stays on one log line. */
+function oneLine(message: string): string {
+  return message.replace(/\s+/g, ' ').slice(0, 200)
+}
+
+/** Compact suffix for a failure warning; the full diagnosis already has its own `[llm]` line. */
+export function briefLlmDiagnostics(d: LlmCallDiagnostics): string {
+  return `finish=${d.finishKind} code=${d.failureCode} elapsedMs=${String(d.elapsedMs)}`
+    + ` outputChars=${String(d.outputChars)} outcome=${d.outcome}`
+}
+
+/** The one authoritative diagnosis line emitted for every model call. */
+export function formatLlmDiagnostics(d: LlmCallDiagnostics): string {
+  return `provider=${d.provider} model=${d.model} maxTokens=${String(d.maxTokens)}`
+    + ` promptChars=${String(d.promptChars)} elapsedMs=${String(d.elapsedMs)}`
+    + ` firstDeltaMs=${d.firstDeltaMs === null ? 'none' : String(d.firstDeltaMs)}`
+    + ` outputChars=${String(d.outputChars)} chunks=${d.chunkTypes}`
+    + ` finish=${d.finishKind} code=${d.failureCode} outcome=${d.outcome}`
+    + ` message=${d.message}`
+}
 
 /** Holds the optional model runtime and default-selection services, and reads both. */
 export class ModelDirectory {
   private llm: LlmService | null = null
   private defaults: AgentDefaultModelService | null = null
+  private readonly log: Logger
+
+  /** @param log - Diagnostics sink for one line per model call. */
+  constructor(log: Logger) {
+    this.log = log
+  }
 
   /**
    * Bind the model runtime.
@@ -118,14 +176,43 @@ export class ModelDirectory {
       content: [{ type: 'text', text: prompt }],
       source: { kind: 'plugin', plugin: 'llm-wiki' },
     }]
+    const started = now()
     let text = ''
     let finish: LlmFinishReason | null = null
-    for await (const chunk of llm.stream({ provider, model, messages, maxTokens })) {
-      if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
-      else if (chunk.type === 'finish' && chunk.reason !== undefined) finish = chunk.reason
+    let firstDeltaMs: number | null = null
+    let thrown: string | null = null
+    const chunkCounts = new Map<string, number>()
+    try {
+      for await (const chunk of llm.stream({ provider, model, messages, maxTokens })) {
+        chunkCounts.set(chunk.type, (chunkCounts.get(chunk.type) ?? 0) + 1)
+        if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
+          if (firstDeltaMs === null) firstDeltaMs = now() - started
+          text += chunk.text
+        } else if (chunk.type === 'finish' && chunk.reason !== undefined) finish = chunk.reason
+      }
+    } catch (error) {
+      // The harness normally reports transport failures as a terminal `finish` chunk, but a stream
+      // can also reject outright. Keep that path observable too.
+      thrown = String(error)
     }
-    const failure = finishError(finish)
-    if (failure !== null) throw failure
+    const failure = thrown !== null ? new Error(thrown) : finishError(finish)
+    const diagnostics: LlmCallDiagnostics = {
+      provider,
+      model,
+      maxTokens,
+      promptChars: prompt.length,
+      elapsedMs: now() - started,
+      firstDeltaMs,
+      outputChars: text.length,
+      chunkTypes: [...chunkCounts.entries()].map(([type, count]) => `${type}:${String(count)}`).join(',') || 'none',
+      finishKind: finish?.kind ?? (thrown !== null ? 'throw' : 'none'),
+      failureCode: finish?.failure?.code ?? '',
+      outcome: thrown !== null ? 'throw' : failure !== null ? 'error' : 'ok',
+      message: failure === null ? '' : oneLine(failure.message),
+    }
+    this.log.debug(`[llm] ${formatLlmDiagnostics(diagnostics)}`)
+    // Keep the original message: the compiler classifies a truncation by its `maxTokens` wording.
+    if (failure !== null) throw new LlmCallError(failure.message, diagnostics)
     return text
   }
 }
@@ -143,7 +230,7 @@ function finishError(finish: LlmFinishReason | null): Error | null {
   switch (finish.kind) {
     case 'stop': return null
     case 'tool-calls': return new Error('model returned a tool call instead of text')
-    case 'max-tokens': return new Error('model output reached maxTokens and was truncated')
+    case 'max-tokens': return new Error('model output reached maxTokens and was truncated; raise compileMaxTokens/compileMaxOutputTokens or lower compileWindowChars')
     case 'error':
     case 'aborted': return new Error(finish.failure?.message ?? `model call ${finish.kind}`)
     default: return new Error(`model call ended with "${finish.kind}"`)

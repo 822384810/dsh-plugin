@@ -4,5 +4,5 @@ dist/
 *.tgz
 *.tsbuildinfo
 .DS_Store
-# PP-OCR models are fetched by plugins/llm-wiki/scripts/fetch-models.mjs at pack time
+# Binary resources are fetched at pack time by plugins/llm-wiki/scripts/*.mjs
 plugins/llm-wiki/models/

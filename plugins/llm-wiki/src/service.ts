@@ -21,6 +21,7 @@ import type { SearchHit } from './shared/retrieval.ts'
 import { hybridSearch } from './shared/retrieval.ts'
 import type { SourceDetail, VectorDetail } from './shared/source-detail.ts'
 import { ftsQuery } from './store/sqlite.ts'
+import { excerpt } from './shared/chunk.ts'
 import { safeResolve, sanitizeFileName, relativePosix, toPosix } from './shared/paths.ts'
 import type { UploadResult } from './shared/upload.ts'
 import { importOptional } from './shared/optional.ts'
@@ -45,6 +46,22 @@ import { syncWikiIndex } from './features/wiki-index.ts'
 import { isSupportedSource, supportedExtensions } from './features/parsers.ts'
 import type { AmbientRecall } from './features/recall.ts'
 import { decodeBuffer } from './shared/encoding.ts'
+import { now } from '@dsh-plugins-xz/time-utils'
+
+/** How long an identical query keeps its embedding, so repeated calls skip ONNX inference. */
+const QUERY_VECTOR_TTL_MS = 30_000
+
+/** Cap on cached query embeddings, so a long session cannot grow the map without bound. */
+const QUERY_VECTOR_CACHE_MAX = 64
+
+/**
+ * How often a compile window gets semantic retrieval.
+ *
+ * Each hybrid call embeds its own query. A large file can need up to 200 windows, so only the
+ * first and every Nth window use the hybrid path; the rest use the synchronous lexical hook,
+ * which still gives each window its own relevant context without another model inference.
+ */
+const COMPILE_HYBRID_EVERY = 8
 
 /** Prefixes a caller may read. */
 const READABLE = ['raw/', 'wiki/'] as const
@@ -99,6 +116,9 @@ export interface ServiceDeps {
 
 /** The knowledge base, as seen by tools, commands and the browser. */
 export class WikiService {
+  /** Identical queries reuse their embedding for a short while. */
+  private readonly queryVectorCache = new Map<string, { readonly vector: Float32Array; readonly at: number }>()
+
   /**
    * @param deps - Registry, embedder, queue, settings and logger.
    */
@@ -545,18 +565,23 @@ export class WikiService {
     if (trimmed === '') return []
     const match = ftsQuery(trimmed)
     const lexical = library.store.lexical(trimmed, Math.max(topK * 2, 10))
-    this.deps.log.debug(`[search] query=${JSON.stringify(trimmed)} fts=${JSON.stringify(match)} lexicalHits=${lexical.length}`)
     const vector = await this.queryVector(trimmed)
-    const hits = hybridSearch({ chunks: library.chunks, vectors: library.vectors }, lexical, vector, topK)
-    if (vector !== null) {
-      const vectorHits = hits.filter(hit => hit.vectorDistance < 1).length
-      this.deps.log.debug(
-        `[search] fused=${hits.length} vectorHits=${vectorHits} lexicalHits=${lexical.length} ` +
-        `vectorDim=${vector.length}`,
-      )
-    } else {
-      this.deps.log.debug(`[search] fused=${hits.length} lexicalOnly lexicalHits=${lexical.length}`)
-    }
+    const hits = hybridSearch(
+      { chunks: library.chunks, vectors: library.vectors },
+      lexical,
+      vector,
+      topK,
+      this.deps.settings.vectorApprox,
+    )
+    // One line per search: query shape, fused result and whether vectors took part.
+    this.deps.log.debug(
+      `[search] q=${JSON.stringify(excerpt(trimmed, 30))} fts=${JSON.stringify(excerpt(match, 30))}`
+      + ` hits=${hits.length} lexical=${lexical.length}`
+      + (vector === null
+        ? ' vector=off'
+        : ` vectorHits=${hits.filter(hit => hit.vectorDistance < 1).length}`
+          + ` dim=${vector.length} approx=${String(this.deps.settings.vectorApprox)}`),
+    )
     return hits
   }
 
@@ -758,23 +783,48 @@ export class WikiService {
   ): Promise<IngestOutcome> {
     // No runtime, or no resolvable route, keeps the compiler on its deterministic fallback.
     const selected = this.resolveModel(library)
+    // Log the resolved route before any call: a reasoning model eating the output budget looks
+    // exactly like a max-tokens truncation, and this line is what tells the two apart.
+    this.deps.log.debug(
+      `[compile] source=${sourceRelPath} provider=${selected?.provider ?? 'none'}`
+      + ` model=${selected?.model ?? 'none'}`,
+    )
     const complete = selected === null || !this.deps.models.ready
       ? null
       : (prompt: string, maxTokens: number): Promise<string> =>
           this.deps.models.complete(selected.provider, selected.model, prompt, maxTokens)
+    // Semantic retrieval for every window would embed one query per window (up to 200 for a large
+    // file). Only the first and every COMPILE_HYBRID_EVERY-th window take the hybrid path; the
+    // others use the cheap synchronous lexical hook, which still gives each window its own context.
+    let windowNo = 0
+    let hybridCalls = 0
+    const retrieve = (query: string, topK: number): Promise<SearchHit[]> => {
+      windowNo++
+      if (windowNo === 1 || windowNo % COMPILE_HYBRID_EVERY === 0) {
+        hybridCalls++
+        return this.search(library.id, query, topK)
+      }
+      return Promise.resolve(this.retrieveLexical(library.id, query, topK))
+    }
     const result = await compileWiki({
       library,
       sourceRelPath,
       sourceText: text,
       indicators,
-      retrieve: (query, topK) => this.retrieveLexical(library.id, query, topK),
+      retrieve,
       complete,
       log: this.deps.log,
       windowChars: this.deps.settings.compileWindowChars,
       maxWindows: this.deps.settings.compileMaxWindows,
       maxTokens: this.deps.settings.compileMaxTokens,
+      maxOutputTokens: this.deps.settings.compileMaxOutputTokens,
+      contextTokens: this.deps.settings.compileContextTokens,
+      charsPerToken: this.deps.settings.compileCharsPerToken,
       onProgress,
     })
+    this.deps.log.debug(
+      `[compile] retrieval for ${sourceRelPath}: ${String(hybridCalls)} hybrid of ${String(windowNo)} window(s)`,
+    )
     // The compiler just wrote pages; make them searchable before the caller moves on.
     await syncWikiIndex(library, this.deps.embedder, this.deps.log)
     return {
@@ -968,16 +1018,27 @@ export class WikiService {
     return this.deps.ambient.build(library.id, query)
   }
 
-  /** Embed a query, or null when no model is loaded. */
+  /** Embed a query, or null when no model is loaded; identical queries reuse their vector briefly. */
   private async queryVector(query: string): Promise<Float32Array | null> {
     if (!this.deps.embedder.ready) {
-      this.deps.log.debug('[search] vector retrieval skipped: embedder not ready (lexical-only)')
       return null
+    }
+    const at = now()
+    const cached = this.queryVectorCache.get(query)
+    if (cached !== undefined && at - cached.at < QUERY_VECTOR_TTL_MS) {
+      return cached.vector
     }
     try {
       const vectors = await this.deps.embedder.embed([query])
-      this.deps.log.debug(`[search] embedded query vector dim=${vectors?.[0]?.length ?? 0}`)
-      return vectors?.[0] ?? null
+      const vector = vectors?.[0] ?? null
+      if (vector !== null) {
+        if (this.queryVectorCache.size >= QUERY_VECTOR_CACHE_MAX) {
+          const oldest = this.queryVectorCache.keys().next().value
+          if (oldest !== undefined) this.queryVectorCache.delete(oldest)
+        }
+        this.queryVectorCache.set(query, { vector, at: now() })
+      }
+      return vector
     } catch (error) {
       this.deps.log.warn(`query embedding failed, continuing lexically: ${String(error)}`)
       return null

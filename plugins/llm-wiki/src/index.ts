@@ -251,7 +251,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     watch: settings.watch,
   }, log)
   const embedder = new Embedder()
-  const models = new ModelDirectory()
+  const models = new ModelDirectory(log)
   const ambient = new AmbientRecall(
     (query, topK) => service.retrieveLexical(registry.getActive()?.id ?? '', query, topK),
     { topK: settings.ambientTopK, maxChars: settings.ambientMaxChars },
@@ -422,12 +422,12 @@ function registerTools(ctx: PluginContext, service: WikiService): void {
       properties: {
         libId: { type: 'string', description: '知识库 ID，省略则使用活跃库' },
         query: { type: 'string', description: '检索词：可用空格分隔多个关键词做 OR 检索（如「数据元 标识 表示」），比整句提问召回更全' },
-        topK: { type: 'number', description: '返回条数，默认 8' },
+        topK: { type: 'number', description: '返回条数，默认 5' },
       },
       required: ['query'],
       run: async args => {
         const query = str(args, 'query')
-        const hits = await service.search(str(args, 'libId'), query, num(args, 'topK', 8))
+        const hits = await service.search(str(args, 'libId'), query, num(args, 'topK', 5))
         if (hits.length === 0) return JSON.stringify({ found: false, message: '知识库中未找到相关内容' })
         return JSON.stringify({
           found: true,
@@ -542,7 +542,7 @@ function registerCommands(ctx: PluginContext, service: WikiService): void {
       handler: async invocation => {
         const query = invocation.rawInput.trim()
         if (query === '') return failure('请提供查询内容')
-        const hits = await service.search('', query, 8).catch(error => {
+        const hits = await service.search('', query, 5).catch(error => {
           throw new Error(String(error))
         })
         if (hits.length === 0) return success('知识库中未找到相关内容。')
@@ -712,7 +712,7 @@ async function dispatch(
       return { queued: await service.reingest(str(args, 'libId'), str(args, 'path')) }
 
     case 'list_pages': return await service.listPages(str(args, 'libId'))
-    case 'search': return await service.search(str(args, 'libId'), str(args, 'query'), num(args, 'topK', 8))
+    case 'search': return await service.search(str(args, 'libId'), str(args, 'query'), num(args, 'topK', 5))
     case 'recompile': return await service.recompile(str(args, 'libId'), str(args, 'path'))
     case 'reindex': return { queued: await service.reindex(str(args, 'libId')) }
     case 'recompile_all': return { queued: await service.recompileAll(str(args, 'libId')) }
